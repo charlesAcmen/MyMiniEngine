@@ -114,6 +114,8 @@ class RotaryEmbedding(nn.Module):
             length = max(max_pos, self._cached_len * 2, 256)
             t = torch.arange(length, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
             freqs = torch.outer(t, self.inv_freq)  # (length, head_dim/2)
+            # Duplicate each frequency block for split-half RoPE:
+            # [theta_0, ..., theta_n, theta_0, ..., theta_n].
             emb = torch.cat([freqs, freqs], dim=-1)  # (length, head_dim)
             self._cos = emb.cos()
             self._sin = emb.sin()
@@ -128,6 +130,10 @@ class RotaryEmbedding(nn.Module):
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     """Rotate the second half of the last dimension."""
     x1, x2 = x.chunk(2, dim=-1)
+    # x'=xcos(theta)-ysin(theta)
+    # y'=xsin(theta)+ycos(theta)
+
+    #[x y]T cos(theta)+[-y x]T sin(theta)
     return torch.cat([-x2, x1], dim=-1)
 
 
