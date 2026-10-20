@@ -21,6 +21,8 @@ dependencies = [
 [project.optional-dependencies]
 bench = [
     "numpy",
+    "pyarrow",
+    "requests",
     "tqdm",
 ]
 
