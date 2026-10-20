@@ -230,12 +230,17 @@ class Attention(nn.Module):
 
         # GQA: expand KV heads to match Q heads
         if self.num_kv_groups > 1:
+            #None:Group dimension, expand to match Q heads
             k = k[:, :, None, :, :].expand(-1, -1, self.num_kv_groups, -1, -1)
+            #-1:automatically infer the size of the new dimension, which is the number of heads divided by the number of KV heads
+            #Hkv*G = HQ
             k = k.reshape(bsz, self.num_heads, -1, self.head_dim)
             v = v[:, :, None, :, :].expand(-1, -1, self.num_kv_groups, -1, -1)
             v = v.reshape(bsz, self.num_heads, -1, self.head_dim)
 
-        # Scaled dot-product attention (uses Flash Attention when available)
+        # Scaled dot-product attention (uses Flash Attention when available).
+        # Keep the legacy no-mask call unchanged: it is the single-request
+        # baseline path, and it must retain its original causal semantics.
         is_causal = kv_cache is None and seq_len > 1
         if attention_mask is None:
             out = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
