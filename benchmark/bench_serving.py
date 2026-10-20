@@ -127,6 +127,39 @@ def chat_template_token_ids(tokenizer, messages: list[dict[str, str]]) -> list[i
     return list(tokenized)
 
 
+def build_exact_length_messages(
+    tokenizer,
+    prompt_ids: list[int],
+    input_len: int,
+) -> tuple[list[dict[str, str]], int]:
+    """Truncate one sufficiently long prompt to an exact chat-template length."""
+    empty_messages = [{"role": "user", "content": ""}]
+    template_overhead = len(chat_template_token_ids(tokenizer, empty_messages))
+    if input_len < template_overhead:
+        raise ValueError(
+            f"input_len={input_len} is smaller than template overhead={template_overhead}"
+        )
+
+    content_len = input_len - template_overhead
+    if len(prompt_ids) < content_len:
+        raise ValueError(
+            f"Prompt has {len(prompt_ids)} content tokens, but {content_len} are required"
+        )
+    content = tokenizer.decode(
+        prompt_ids[:content_len],
+        skip_special_tokens=True,
+    )
+    messages = [{"role": "user", "content": content}]
+    actual_input_len = len(chat_template_token_ids(tokenizer, messages))
+    #this part it necessary,cause encode(decode(ids)) == ids is not guarenteed
+    if actual_input_len != input_len:
+        raise RuntimeError(
+            "Could not build an exact chat-template input length: "
+            f"wanted {input_len}, got {actual_input_len}"
+        )
+    return messages, actual_input_len
+
+
 def prepare_requests(
     prompts: Iterable[str],
     tokenizer,
@@ -166,40 +199,42 @@ def prepare_requests(
             req_input_len = random.randint(min_in, input_len)
             req_output_len = random.randint(min_out, output_len)
 
-        # Pick a prompt and truncate/pad to target input length
-        raw_prompt = prompts[i % len(prompts)]
-        messages = [{"role": "user", "content": raw_prompt}]
-        ids = chat_template_token_ids(tokenizer, messages)
+        content_len = req_input_len - template_overhead
+        prompt_parts: list[str] = []
+        prompt_ids: list[int] = []
+        while len(prompt_ids) < content_len:
+            try:
+                raw_prompt = next(prompt_iter)
+            except StopIteration as exc:
+                raise RuntimeError(
+                    "WildChat data was exhausted before enough content tokens "
+                    f"were found: built {len(requests)}/{num_requests} requests "
+                    f"from {consumed_prompts} prompts"
+                ) from exc
 
-        if len(ids) > req_input_len:
-            # Truncate: decode back to text from truncated ids
-            # Keep the chat template structure by truncating user content
-            truncated_ids = ids[:req_input_len]
-            truncated_text = tokenizer.decode(truncated_ids, skip_special_tokens=True)
-            messages = [{"role": "user", "content": truncated_text}]
-            actual_input_len = req_input_len
-        elif len(ids) < req_input_len:
-            # Pad by repeating the prompt
-            filler = " The quick brown fox jumps over the lazy dog."
-            padded = raw_prompt
-            while True:
-                padded += filler
-                msgs = [{"role": "user", "content": padded}]
-                test_ids = chat_template_token_ids(tokenizer, msgs)
-                if len(test_ids) >= req_input_len:
-                    messages = msgs
-                    actual_input_len = len(test_ids)
-                    break
-        else:
-            actual_input_len = len(ids)
+            consumed_prompts += 1
+            prompt_parts.append(raw_prompt)
+            prompt_ids = tokenizer.encode(
+                "".join(prompt_parts), add_special_tokens=False
+            )
 
-        requests.append({
-            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
-            "max_tokens": req_output_len,
-            "input_len": actual_input_len,
-            "output_len": req_output_len,
-        })
+        messages, actual_input_len = build_exact_length_messages(
+            tokenizer, prompt_ids, req_input_len
+        )
+        requests.append(
+            {
+                "messages": messages,
+                "max_tokens": req_output_len,
+                "input_len": actual_input_len,
+                "output_len": req_output_len,
+            }
+        )
 
+    print(
+        f"  Consumed {consumed_prompts} WildChat prompts while assembling "
+        f"{num_requests} fixed-length requests",
+        flush=True,
+    )
     return requests
 
 
@@ -431,7 +466,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 
     # Load prompts from local WildChat Parquet files only.
-    prompts = load_local_prompts(args.prompt_data_dir, args.num_requests)
+    prompts = iter_local_prompts(args.prompt_data_dir)
 
     # Prepare requests with controlled lengths
     print(f"  Preparing {args.num_requests} requests...", flush=True)
