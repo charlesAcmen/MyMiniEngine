@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--dtype",
         type=str,
-        default="float16",
+        default="bfloat16",
         choices=["float16", "bfloat16", "float32"],
     )
     p.add_argument(
