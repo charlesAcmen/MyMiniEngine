@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 class Scheduler:
     """
-    Naive FCFS scheduler — processes requests one at a time.
+    FCFS scheduler with naive and static-batch implementations.
 
     Public API (thread-safe):
         add_request(req)   — enqueue a new request
@@ -37,7 +37,8 @@ class Scheduler:
         stop()             — gracefully shut down
 
     Internal (called from the scheduler thread):
-        step()             — one full scheduling iteration
+        step()              — preserved naive once-at-a-time baseline
+        step_static_batch() — M1 static-batch iteration
     """
 
     def __init__(self, engine: Engine, max_running: int = 16):
@@ -93,7 +94,7 @@ class Scheduler:
                 time.sleep(0.005)  # idle sleep to avoid busy-waiting
                 continue
             try:
-                self.step()
+                self.step_static_batch()
             except Exception:
                 logger.exception("Scheduler step failed")
 
@@ -130,6 +131,64 @@ class Scheduler:
             self._stream_token(req, token_id)
 
         self._finish_request(req, finished)
+        return finished
+
+    def step_static_batch(self) -> list[Request]:
+        """
+        Run one static-batch scheduling iteration.
+
+        A batch is admitted only after the previous batch fully drains. Its
+        prompt prefill is per request; later iterations decode all survivors
+        together once.
+
+        Returns list of requests that finished in this step.
+        """
+        finished: list[Request] = []
+
+        if not self.running:
+            # Static-batch admission: finished slots are intentionally not refilled.
+            with self._lock:
+                batch = [
+                    self.waiting.popleft()
+                    for _ in range(min(self.max_running, len(self.waiting)))
+                ]
+
+            # Prompt lengths are ragged, so prefill keeps GPU KV ownership per request.
+            for req in batch:
+                req.status = RequestStatus.RUNNING
+                token_id = self.engine.prefill(req)
+                #new token id appended
+                req.output_ids.append(token_id)
+                #Push a generated token into the request's streaming queue.
+                self._stream_token(req, token_id)
+
+                if self._check_finished(req, token_id):
+                    self._finish_request(req, finished)
+                else:
+                    self.running.append(req)
+
+            return finished
+
+        active_requests = self.running
+        # batched_decode uses a temporary padded KV workspace, then restores compact KV.
+        token_ids = self.engine.batched_decode(active_requests)
+        if len(token_ids) != len(active_requests):
+            raise RuntimeError(
+                "batched_decode must return one token for every running request"
+            )
+
+        surviving_requests: list[Request] = []
+        #active_requests[i] ↔ token_ids[i]
+        for req, token_id in zip(active_requests, token_ids):
+            req.output_ids.append(token_id)
+            self._stream_token(req, token_id)
+
+            if self._check_finished(req, token_id):
+                self._finish_request(req, finished)
+            else:
+                surviving_requests.append(req)
+
+        self.running = surviving_requests
         return finished
 
     # ── Helpers ─────────────────────────────────────────────────────────
