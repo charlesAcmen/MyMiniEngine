@@ -149,13 +149,21 @@ def prepare_requests(
     randomness: float,
 ) -> list[dict]:
     """
-    Prepare requests with controlled input/output lengths.
+    Prepare requests with controlled, exact input/output length targets.
 
     randomness:
         1.0 = all requests use exactly (input_len, output_len)
         0.0 = uniform random from [1, input_len] and [1, output_len]
         0.5 = uniform random from [input_len/2, input_len] etc.
     """
+    template_overhead = len(
+        chat_template_token_ids(tokenizer, [{"role": "user", "content": ""}])
+    )
+    if input_len < template_overhead:
+        raise ValueError(
+            f"input_len={input_len} is smaller than template overhead={template_overhead}"
+        )
+
     requests = []
     for i in range(num_requests):
         # Compute this request's target lengths
@@ -164,7 +172,7 @@ def prepare_requests(
             req_output_len = output_len
         else:
             lo_frac = randomness  # e.g. 0.5 → sample from [50%, 100%] of target
-            min_in = max(1, int(input_len * lo_frac))
+            min_in = max(template_overhead, int(input_len * lo_frac))
             min_out = max(1, int(output_len * lo_frac))
             req_input_len = random.randint(min_in, input_len)
             req_output_len = random.randint(min_out, output_len)
