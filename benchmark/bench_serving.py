@@ -27,6 +27,7 @@ import json
 import random
 import sys
 import time
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,8 +79,8 @@ DEFAULT_PROMPT_DATA_DIR = (
 )
 
 
-def load_local_prompts(prompt_data_dir: Path, num_prompts: int) -> list[str]:
-    """Read a bounded prompt pool from local WildChat Parquet files only."""
+def iter_local_prompts(prompt_data_dir: Path) -> Iterator[str]:
+    """Yield usable WildChat prompts in deterministic on-disk order."""
     from pyarrow.parquet import ParquetFile
 
     parquet_files = sorted(prompt_data_dir.glob("*.parquet"))
@@ -90,8 +91,6 @@ def load_local_prompts(prompt_data_dir: Path, num_prompts: int) -> list[str]:
         )
 
     print(f"  Loading local WildChat prompts from: {prompt_data_dir}", flush=True)
-    prompts: list[str] = []
-    target_count = num_prompts * 5
     for parquet_path in parquet_files:
         for batch in ParquetFile(parquet_path).iter_batches(
             columns=["conversation"], batch_size=1024
@@ -102,19 +101,7 @@ def load_local_prompts(prompt_data_dir: Path, num_prompts: int) -> list[str]:
                     continue
                 prompt = conversation[0]["content"].strip()
                 if 20 < len(prompt) < 50000:
-                    prompts.append(prompt)
-                if len(prompts) >= target_count:
-                    break
-            if len(prompts) >= target_count:
-                break
-        if len(prompts) >= target_count:
-            break
-
-    if not prompts:
-        raise RuntimeError(f"No usable user prompts found in {prompt_data_dir}")
-    random.shuffle(prompts)
-    print(f"  Loaded {len(prompts)} local candidate prompts", flush=True)
-    return prompts
+                    yield prompt
 
 
 def chat_template_token_ids(tokenizer, messages: list[dict[str, str]]) -> list[int]:
@@ -141,7 +128,7 @@ def chat_template_token_ids(tokenizer, messages: list[dict[str, str]]) -> list[i
 
 
 def prepare_requests(
-    prompts: list[str],
+    prompts: Iterable[str],
     tokenizer,
     num_requests: int,
     input_len: int,
@@ -165,6 +152,8 @@ def prepare_requests(
         )
 
     requests = []
+    prompt_iter = iter(prompts)
+    consumed_prompts = 0
     for i in range(num_requests):
         # Compute this request's target lengths
         if randomness >= 1.0:
