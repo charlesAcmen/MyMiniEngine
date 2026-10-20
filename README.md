@@ -52,9 +52,10 @@ Two benchmarks are provided. Both send requests to a **running** MiniEngine serv
 
 ### Serving Benchmark (`bench_serving.py`)
 
-Measures throughput and latency under varying concurrency. Prompts are
-sampled from [WildChat](https://huggingface.co/datasets/allenai/WildChat-1M)
-and truncated/padded to the target input length.
+Measures throughput and latency under varying concurrency. Prompts are read
+only from the local WildChat Parquet files in data/WildChat-1M/data/ and are
+truncated/padded to the target input length. The serving benchmark has no
+online dataset fallback.
 
 ```bash
 # Default: 1024 in/out, sweep concurrency 1→32, 100 requests

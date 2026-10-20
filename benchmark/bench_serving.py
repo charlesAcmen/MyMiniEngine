@@ -2,8 +2,8 @@
 Serving benchmark — throughput & latency under varying concurrency.
 
 Sends streaming requests to a running MiniEngine server, sweeping
-concurrency from 1 to 32 (configurable).  Prompts are sampled from
-WildChat and truncated / padded to the target input length.
+concurrency from 1 to 32 (configurable).  Prompts are read only from local WildChat Parquet files and truncated /
+padded to the target input length.
 
 Usage:
     # Start the server first, then:
@@ -16,7 +16,7 @@ Reports per concurrency level:
     - Completion    p50 / p99  (end-to-end request latency)
     - Generation throughput    (output tokens / s)
 
-Requires: aiohttp, numpy, datasets, transformers
+Requires: aiohttp, numpy, pyarrow, transformers
 """
 
 from __future__ import annotations
@@ -73,27 +73,71 @@ class RequestMetrics:
 # ── Prompt generation ──────────────────────────────────────────────────
 
 
-def load_wildchat_prompts(num_prompts: int) -> list[str]:
-    """Load user messages from WildChat as a prompt pool."""
-    from datasets import load_dataset
+DEFAULT_PROMPT_DATA_DIR = (
+    Path(__file__).resolve().parent.parent / "data" / "WildChat-1M" / "data"
+)
 
-    print("  Loading WildChat prompts...", flush=True)
-    ds = load_dataset("allenai/WildChat-1M", split="train", streaming=True)
 
+def load_local_prompts(prompt_data_dir: Path, num_prompts: int) -> list[str]:
+    """Read a bounded prompt pool from local WildChat Parquet files only."""
+    from pyarrow.parquet import ParquetFile
+
+    parquet_files = sorted(prompt_data_dir.glob("*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(
+            f"No Parquet files found in {prompt_data_dir}. "
+            "Download the local WildChat dataset before running this benchmark."
+        )
+
+    print(f"  Loading local WildChat prompts from: {prompt_data_dir}", flush=True)
     prompts: list[str] = []
-    for row in ds:
-        conv = row.get("conversation", [])
-        if not conv or conv[0].get("role") != "user":
-            continue
-        text = conv[0]["content"].strip()
-        if 20 < len(text) < 50000:  # filter very short/long
-            prompts.append(text)
-        if len(prompts) >= num_prompts * 5:  # collect a pool to sample from
+    target_count = num_prompts * 5
+    for parquet_path in parquet_files:
+        for batch in ParquetFile(parquet_path).iter_batches(
+            columns=["conversation"], batch_size=1024
+        ):
+            for row in batch.to_pylist():
+                conversation = row["conversation"]
+                if not conversation or conversation[0]["role"] != "user":
+                    continue
+                prompt = conversation[0]["content"].strip()
+                if 20 < len(prompt) < 50000:
+                    prompts.append(prompt)
+                if len(prompts) >= target_count:
+                    break
+            if len(prompts) >= target_count:
+                break
+        if len(prompts) >= target_count:
             break
 
+    if not prompts:
+        raise RuntimeError(f"No usable user prompts found in {prompt_data_dir}")
     random.shuffle(prompts)
-    print(f"  Loaded {len(prompts)} candidate prompts", flush=True)
+    print(f"  Loaded {len(prompts)} local candidate prompts", flush=True)
     return prompts
+
+
+def chat_template_token_ids(tokenizer, messages: list[dict[str, str]]) -> list[int]:
+    """Normalize tokenizer-version-specific chat-template output to token ids."""
+    try:
+        tokenized = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    except TypeError:
+        tokenized = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+        )
+
+    if hasattr(tokenized, "input_ids"):
+        return list(tokenized["input_ids"])
+    if hasattr(tokenized, "ids"):
+        return list(tokenized.ids)
+    return list(tokenized)
 
 
 def prepare_requests(
@@ -128,15 +172,7 @@ def prepare_requests(
         # Pick a prompt and truncate/pad to target input length
         raw_prompt = prompts[i % len(prompts)]
         messages = [{"role": "user", "content": raw_prompt}]
-        try:
-            ids = tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True,
-                enable_thinking=False,
-            )
-        except TypeError:
-            ids = tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True,
-            )
+        ids = chat_template_token_ids(tokenizer, messages)
 
         if len(ids) > req_input_len:
             # Truncate: decode back to text from truncated ids
@@ -152,15 +188,7 @@ def prepare_requests(
             while True:
                 padded += filler
                 msgs = [{"role": "user", "content": padded}]
-                try:
-                    test_ids = tokenizer.apply_chat_template(
-                        msgs, tokenize=True, add_generation_prompt=True,
-                        enable_thinking=False,
-                    )
-                except TypeError:
-                    test_ids = tokenizer.apply_chat_template(
-                        msgs, tokenize=True, add_generation_prompt=True,
-                    )
+                test_ids = chat_template_token_ids(tokenizer, msgs)
                 if len(test_ids) >= req_input_len:
                     messages = msgs
                     actual_input_len = len(test_ids)
@@ -364,6 +392,12 @@ def main():
                    help="Length randomness: 1.0=fixed, 0.0=uniform [1,target], 0.5=[target/2,target]")
     p.add_argument("--concurrencies", type=str, default="1,2,4,8,16,32",
                    help="Comma-separated concurrency levels to sweep")
+    p.add_argument(
+        "--prompt-data-dir",
+        type=Path,
+        default=DEFAULT_PROMPT_DATA_DIR,
+        help="Directory containing local WildChat Parquet files",
+    )
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
@@ -391,6 +425,7 @@ def main():
     print(f"  Output len   : {args.output_len}")
     print(f"  Randomness   : {args.randomness}")
     print(f"  Concurrencies: {concurrencies}")
+    print(f"  Prompt data  : {args.prompt_data_dir}")
     print(f"{'=' * 60}")
 
     # Load tokenizer
@@ -398,8 +433,8 @@ def main():
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 
-    # Load prompts from WildChat
-    prompts = load_wildchat_prompts(args.num_requests)
+    # Load prompts from local WildChat Parquet files only.
+    prompts = load_local_prompts(args.prompt_data_dir, args.num_requests)
 
     # Prepare requests with controlled lengths
     print(f"  Preparing {args.num_requests} requests...", flush=True)
