@@ -24,6 +24,7 @@ import logging
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from transformers import AutoTokenizer
 
 from miniengine.core import Request
@@ -164,6 +165,157 @@ class Engine:
         return sample_token(
             logits[:, -1, :], request.sampling_params, request.output_ids
         )
+
+
+    @torch.inference_mode()
+    def batched_decode(self, requests: list[Request]) -> list[int]:
+        """Run one decode token for every request in a static M1 batch.
+
+        Each request owns a compact batch-size-one KV cache. This method
+        temporarily right-pads those caches to the longest request, runs one
+        model forward, then reconstructs compact independent caches. Padding
+        is therefore never retained by an individual request.
+        """
+        if not requests:
+            return []
+
+        model_parameter = next(self.model.parameters())
+        model_device = model_parameter.device
+        #torch.bfloat16
+        model_dtype = model_parameter.dtype
+        #for Qwen3-0.6B 28 layers
+        num_layers = len(requests[0].kv_cache or [])
+        if num_layers == 0:
+            raise ValueError("batched_decode requires initialized per-layer KV caches")
+
+        cache_lengths: list[int] = []
+        for request in requests:
+            #first token is generated
+            if not request.output_ids:
+                raise ValueError("batched_decode requires a previously generated token")
+            #same model,complete layers of kv cache for each request
+            if request.kv_cache is None or len(request.kv_cache) != num_layers:
+                raise ValueError("all requests must have the same initialized KV layers")
+
+            first_key, first_value = request.kv_cache[0]
+            #k、V:(1,Hkv,cache_len,head_dim)
+            #for qwen3-0.6B:
+            # Hkv      = 8
+            # head_dim = 128
+            if first_key.ndim != 4 or first_key.shape != first_value.shape:
+                raise ValueError("each KV cache must be matching rank-four K/V tensors")
+            cache_len = first_key.shape[2]
+            for key, value in request.kv_cache:
+                #all kv has same length across all layers
+                #key.shape[0] != 1:(1, Hkv, L_i, D)√(B, Hkv, Lmax, D)×
+                if key.ndim != 4 or key.shape != value.shape or key.shape[0] != 1:
+                    raise ValueError(
+                        "each request KV cache must be matching batch-size-one K/V"
+                    )
+                if key.shape[2] != cache_len:
+                    raise ValueError(
+                        "all KV layers for a request must share one cache length"
+                    )
+                if key.device != model_device or key.dtype != model_dtype:
+                    raise ValueError("KV cache device and dtype must match the model")
+            cache_lengths.append(cache_len)
+
+        batch_size = len(requests)
+        max_cache_len = max(cache_lengths)
+        input_ids = torch.tensor(
+            #id of first generated token
+            [[request.output_ids[-1]] for request in requests],
+            dtype=torch.long,
+            device=model_device,
+        )
+        position_ids = torch.tensor(
+            #position ids is used in RoPE position,
+            #so cache lengths ,rather than padded ones length is passed
+            cache_lengths, dtype=torch.long, device=model_device
+        ).unsqueeze(1)
+
+        # The final KV position is the newly decoded token for every request.
+        # Middle right-padding is invisible to attention for shorter caches.
+        old_positions = torch.arange(max_cache_len, device=model_device).unsqueeze(0)
+        #[
+        #     [T, T, T, T, T],
+        #     [T, T, T, F, F],
+        # ]
+        old_visible = old_positions < position_ids
+        new_token_visible = torch.ones(
+            (batch_size, 1), dtype=torch.bool, device=model_device
+        )
+        attention_mask = torch.cat([old_visible, new_token_visible], dim=1)
+        #(B, Lmax + 1) -> (B, 1, 1, Lmax + 1)
+        attention_mask = attention_mask[:, None, None, :]
+
+        batched_kv_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for layer_idx in range(num_layers):
+            keys: list[torch.Tensor] = []
+            values: list[torch.Tensor] = []
+            for request, cache_len in zip(requests, cache_lengths):
+                key, value = request.kv_cache[layer_idx]
+                right_padding = max_cache_len - cache_len
+                if right_padding:
+                    #pad in sequence dim right side
+                    key = F.pad(key, (0, 0, 0, right_padding))
+                    value = F.pad(value, (0, 0, 0, right_padding))
+                keys.append(key)
+                values.append(value)
+            batched_kv_caches.append(
+                #cat in batch dim for all requests
+                (torch.cat(keys, dim=0), torch.cat(values, dim=0))
+            )
+
+        #returned kv cache is still padded
+        logits, returned_kv_caches = self.model(
+            input_ids,
+            position_ids,
+            kv_caches=batched_kv_caches,
+            attention_mask=attention_mask,
+        )
+
+        for request_idx, (request, cache_len) in enumerate(
+            #[
+            #     (0, (req_A, 3)),
+            #     (1, (req_B, 5)),
+            #     (2, (req_C, 2))
+            # ]
+            zip(requests, cache_lengths)
+        ):
+            compact_kv: list[tuple[torch.Tensor, torch.Tensor]] = []
+            for returned_key, returned_value in returned_kv_caches:
+                #[batch_size, num_kv_heads, seq_len, head_dim]
+                key = torch.cat(
+                    [
+                        #request_idx:request_idx + 1:reserve batch dim
+                        returned_key[request_idx:request_idx + 1, :, :cache_len, :],
+                        #-1：last token，new token,compact kv
+                        returned_key[request_idx:request_idx + 1, :, -1:, :],
+                    ],
+                    #cat by sequence dim
+                    dim=2,
+                    #ensure coalesced memory layout
+                ).contiguous()
+                value = torch.cat(
+                    [
+                        returned_value[request_idx:request_idx + 1, :, :cache_len, :],
+                        returned_value[request_idx:request_idx + 1, :, -1:, :],
+                    ],
+                    dim=2,
+                ).contiguous()
+                compact_kv.append((key, value))
+            request.kv_cache = compact_kv
+
+        return [
+            sample_token(
+                #reserve batch dim,ith request
+                logits[i:i + 1, -1, :],
+                request.sampling_params,
+                request.output_ids,
+            )
+            for i, request in enumerate(requests)
+        ]
 
     def is_stop_token(self, token_id: int) -> bool:
         return token_id in self.stop_token_ids
