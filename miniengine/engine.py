@@ -267,20 +267,23 @@ class Engine:
             cache_lengths, dtype=torch.long, device=model_device
         ).unsqueeze(1)
 
-        # The final KV position is the newly decoded token for every request.
-        # Middle right-padding is invisible to attention for shorter caches.
-        old_positions = torch.arange(max_cache_len, device=model_device).unsqueeze(0)
-        #[
-        #     [T, T, T, T, T],
-        #     [T, T, T, F, F],
-        # ]
-        old_visible = old_positions < position_ids
-        new_token_visible = torch.ones(
-            (batch_size, 1), dtype=torch.bool, device=model_device
-        )
-        attention_mask = torch.cat([old_visible, new_token_visible], dim=1)
-        #(B, Lmax + 1) -> (B, 1, 1, Lmax + 1)
-        attention_mask = attention_mask[:, None, None, :]
+        # Equal-length KV has no padding, so every cache entry is visible.
+        # Passing None also keeps the no-mask SDPA path. Mixed lengths retain
+        # the original mask, whose final column is the newly decoded token.
+        attention_mask: torch.Tensor | None = None
+        if len(set(cache_lengths)) != 1:
+            old_positions = torch.arange(max_cache_len, device=model_device).unsqueeze(0)
+            #[
+            #     [T, T, T, T, T],
+            #     [T, T, T, F, F],
+            # ]
+            old_visible = old_positions < position_ids
+            new_token_visible = torch.ones(
+                (batch_size, 1), dtype=torch.bool, device=model_device
+            )
+            attention_mask = torch.cat([old_visible, new_token_visible], dim=1)
+            #(B, Lmax + 1) -> (B, 1, 1, Lmax + 1)
+            attention_mask = attention_mask[:, None, None, :]
 
         batched_kv_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
         for layer_idx in range(num_layers):
