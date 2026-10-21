@@ -262,6 +262,7 @@ async def send_request(
         payload["ignore_eos"] = True
 
     metrics.start_time = time.perf_counter()
+    received_usage = False
     try:
         async with session.post(
             f"{base_url}/v1/chat/completions", json=payload,
@@ -282,17 +283,26 @@ async def send_request(
                     data = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
-                delta = data["choices"][0].get("delta", {})
-                content = delta.get("content", "")
-                if content:
-                    metrics.num_output_tokens += 1
-                    if metrics.first_token_time is None:
-                        metrics.first_token_time = time.perf_counter()
+                choice = data["choices"][0]
+                # A streamed item represents one sampled id today, but text is
+                # not a token counter: EOS/special ids can decode to "".
+                if choice.get("finish_reason") is None and metrics.first_token_time is None:
+                    metrics.first_token_time = time.perf_counter()
+                usage = data.get("usage")
+                if usage is not None:
+                    completion_tokens = usage.get("completion_tokens")
+                    if not isinstance(completion_tokens, int) or completion_tokens < 0:
+                        metrics.error = "Server returned invalid usage.completion_tokens"
+                    else:
+                        metrics.num_output_tokens = completion_tokens
+                        received_usage = True
 
     except Exception as e:
         metrics.error = str(e)
 
     metrics.end_time = time.perf_counter()
+    if metrics.error is None and not received_usage:
+        metrics.error = "Server did not return usage.completion_tokens"
     return metrics
 
 
