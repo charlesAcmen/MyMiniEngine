@@ -61,16 +61,16 @@ truncated/padded to the target input length. The serving benchmark has no
 online dataset fallback.
 
 ```bash
-python -m benchmark.bench_serving --model models/Qwen3-0.6B \
-  --concurrencies 1,2,4,8,16,32 --num-requests 100
+python -m benchmark.bench_serving --model models/Qwen3-0.6B \ --num-requests 50 \
+  --randomness 0.5 --concurrencies 16
 ```
 
 **Key flags:**
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--input-len` | 1024 | Target input length (tokens) |
-| `--output-len` | 1024 | Target output length (tokens) |
+| `--input-len` | 512 | Target input length (tokens);|
+| `--output-len` | 256 | Target output length (tokens); |
 | `--randomness` | 1.0 | Length randomness: `1.0` = all requests use exact target lengths; `0.0` = uniform random from `[1, target]`; `0.5` = uniform from `[target/2, target]` |
 | `--concurrencies` | 1,2,4,8,16,32 | Concurrency levels to sweep |
 | `--num-requests` | 100 | Total requests per concurrency level |
