@@ -50,7 +50,9 @@ class ModelConfig:
     def from_pretrained(cls, model_path: str) -> ModelConfig:
         from transformers import AutoConfig
 
-        hf = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        hf = AutoConfig.from_pretrained(
+            model_path, trust_remote_code=True, local_files_only=True
+        )
         return cls(
             vocab_size=hf.vocab_size,
             hidden_size=hf.hidden_size,
@@ -394,6 +396,17 @@ class CausalLM(nn.Module):
 # ── Weight loading ──────────────────────────────────────────────────────
 
 
+def require_local_model_dir(model_path: str) -> Path:
+    """Return an existing checkpoint directory; MiniEngine never downloads models."""
+    local_path = Path(model_path).expanduser()
+    if not local_path.is_dir():
+        raise FileNotFoundError(
+            "MiniEngine only supports an existing local model directory; "
+            f"got {model_path!r}."
+        )
+    return local_path
+
+
 def load_weights(
     model: CausalLM,
     model_path: str,
@@ -401,22 +414,17 @@ def load_weights(
     device: str = "cuda",
 ) -> None:
     """
-    Load weights from HuggingFace safetensors into the model.
+    Load weights from a local safetensors checkpoint directory.
 
-    Handles both single-file and sharded checkpoints.  Weight names in the
-    checkpoint match our module hierarchy exactly (by design), so we can
-    use load_state_dict() directly.
+    Model downloads and Hugging Face cache lookup are intentionally unsupported.
+    Handles both single-file and sharded checkpoints. Weight names in the
+    checkpoint match our module hierarchy exactly (by design), so we can use
+    load_state_dict() directly.
     """
-    from huggingface_hub import snapshot_download
     from safetensors.torch import load_file
 
-    logger.info("Downloading / locating model files for %s …", model_path)
-    local_path = Path(
-        snapshot_download(
-            model_path,
-            allow_patterns=["*.safetensors", "*.json"],
-        )
-    )
+    local_path = require_local_model_dir(model_path)
+    logger.info("Loading model files directly from local directory %s …", local_path)
 
     # Gather all safetensor shard files
     st_files = sorted(local_path.glob("model*.safetensors"))

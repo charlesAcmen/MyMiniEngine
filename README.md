@@ -32,14 +32,14 @@ The engine serves an OpenAI-compatible API and is structured so that the **sched
 # Install
 pip install -e .
 
-# Launch (downloads model on first run)
-python -m miniengine --model Qwen/Qwen3-8B
+# Launch the local model (no Hugging Face cache or network access).
+python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16
 
 # Test with curl
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Qwen/Qwen3-8B",
+    "model": "models/Qwen3-0.6B",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_tokens": 64,
     "stream": true
@@ -49,6 +49,9 @@ curl http://localhost:8000/v1/chat/completions \
 ## Benchmarks
 
 Two benchmarks are provided. Both send requests to a **running** MiniEngine server.
+```bash
+python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16
+```
 
 ### Serving Benchmark (`bench_serving.py`)
 
@@ -58,14 +61,8 @@ truncated/padded to the target input length. The serving benchmark has no
 online dataset fallback.
 
 ```bash
-# Default: 1024 in/out, sweep concurrency 1→32, 100 requests
-python -m benchmark.bench_serving
-
-# Custom lengths and randomness
-python -m benchmark.bench_serving --input-len 512 --output-len 256 --randomness 0.5
-
-# Specific concurrency levels
-python -m benchmark.bench_serving --concurrencies 1,4,16 --num-requests 50
+python -m benchmark.bench_serving --model models/Qwen3-0.6B \
+  --concurrencies 1,2,4,8,16,32 --num-requests 100
 ```
 
 **Key flags:**

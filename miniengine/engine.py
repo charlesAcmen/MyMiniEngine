@@ -28,7 +28,7 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer
 
 from miniengine.core import Request
-from miniengine.model import CausalLM, ModelConfig, load_weights
+from miniengine.model import CausalLM, ModelConfig, load_weights, require_local_model_dir
 from miniengine.sampler import sample_token
 
 logger = logging.getLogger(__name__)
@@ -45,16 +45,17 @@ class Engine:
     ):
         self.device = device
         self.dtype = dtype
+        local_model_path = require_local_model_dir(model_path)
 
-        # ── Tokenizer (still from HF — it's just a tokenizer) ──────────
-        logger.info("Loading tokenizer from %s …", model_path)
+        # ── Tokenizer files are read from the same local checkpoint. ────
+        logger.info("Loading tokenizer from %s …", local_model_path)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_path, trust_remote_code=True
+            str(local_model_path), trust_remote_code=True, local_files_only=True
         )
 
         # ── Model (bare-bone PyTorch, loaded from safetensors) ──────────
-        logger.info("Loading model config from %s …", model_path)
-        config = ModelConfig.from_pretrained(model_path)
+        logger.info("Loading model config from %s …", local_model_path)
+        config = ModelConfig.from_pretrained(str(local_model_path))
         logger.info(
             "Config: layers=%d, hidden=%d, heads=%d, kv_heads=%d, head_dim=%d, "
             "intermediate=%d, vocab=%d, tie_embed=%s",
@@ -69,7 +70,7 @@ class Engine:
         )
 
         self.model = CausalLM(config)
-        load_weights(self.model, model_path, dtype=dtype, device=device)
+        load_weights(self.model, str(local_model_path), dtype=dtype, device=device)
         self.model.eval()
 
         # ── Stop tokens ─────────────────────────────────────────────────
