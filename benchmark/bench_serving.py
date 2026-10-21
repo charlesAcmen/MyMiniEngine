@@ -43,7 +43,7 @@ import numpy as np
 @dataclass
 class RequestMetrics:
     input_len: int
-    target_output_len: int
+    target_output_len: int | None
     start_time: float = 0.0
     first_token_time: float | None = None
     end_time: float | None = None
@@ -165,7 +165,8 @@ def prepare_requests(
     tokenizer,
     num_requests: int,
     input_len: int,
-    output_len: int,
+    output_len: int | None,
+    max_tokens: int,
     randomness: float,
 ) -> list[dict]:
     """
@@ -418,8 +419,15 @@ def main():
     p.add_argument("--num-requests", type=int, default=100)
     p.add_argument("--input-len", type=int, default=512,
                    help="Target input length in tokens")
-    p.add_argument("--output-len", type=int, default=256,
-                   help="Target output length in tokens")
+    output_group = p.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "--output-len", type=int, default=None,
+        help="Fixed sampled output length; enables benchmark-only ignore_eos",
+    )
+    output_group.add_argument(
+        "--max-tokens", type=int, default=256,
+        help="Natural-mode output cap; EOS may end a request earlier (default: 256)",
+    )
     p.add_argument("--randomness", type=float, default=1.0,
                    help="Length randomness: 1.0=fixed, 0.0=uniform [1,target], 0.5=[target/2,target]")
     p.add_argument("--concurrencies", type=str, default="1,2,4,8,16,32",
@@ -432,6 +440,11 @@ def main():
     )
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
+
+    if args.output_len is not None and args.output_len < 1:
+        p.error("--output-len must be at least 1")
+    if args.max_tokens is not None and args.max_tokens < 1:
+        p.error("--max-tokens must be at least 1")
 
     random.seed(args.seed)
     concurrencies = [int(x) for x in args.concurrencies.split(",")]
@@ -454,7 +467,10 @@ def main():
     print(f"  Model        : {model_id}")
     print(f"  Requests     : {args.num_requests}")
     print(f"  Input len    : {args.input_len}")
-    print(f"  Output len   : {args.output_len}")
+    if args.output_len is not None:
+        print(f"  Output mode  : fixed ({args.output_len} sampled tokens; ignore_eos=true)")
+    else:
+        print(f"  Output mode  : natural (max_tokens={args.max_tokens}; EOS enabled)")
     print(f"  Randomness   : {args.randomness}")
     print(f"  Concurrencies: {concurrencies}")
     print(f"  Prompt data  : {args.prompt_data_dir}")
