@@ -60,3 +60,4 @@ Thumbs.db
 
 # Locally downloaded benchmark datasets
 data/
+models/
