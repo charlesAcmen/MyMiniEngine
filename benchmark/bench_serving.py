@@ -416,9 +416,9 @@ def main():
     p.add_argument("--model", type=str, default=None,
                    help="HuggingFace model id (for tokenizer). Auto-detected from server if not set.")
     p.add_argument("--num-requests", type=int, default=100)
-    p.add_argument("--input-len", type=int, default=1024,
+    p.add_argument("--input-len", type=int, default=512,
                    help="Target input length in tokens")
-    p.add_argument("--output-len", type=int, default=1024,
+    p.add_argument("--output-len", type=int, default=256,
                    help="Target output length in tokens")
     p.add_argument("--randomness", type=float, default=1.0,
                    help="Length randomness: 1.0=fixed, 0.0=uniform [1,target], 0.5=[target/2,target]")
