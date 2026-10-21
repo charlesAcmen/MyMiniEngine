@@ -107,8 +107,6 @@ Use the serving benchmark to measure improvement:
 python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16 --max-running 16
 
 python -m benchmark.bench_serving --model models/Qwen3-0.6B \
-  --input-len 128 --output-len 64 --num-requests 8 --concurrencies 8
-python -m benchmark.bench_serving --model models/Qwen3-0.6B \
   --input-len 512 --output-len 256 --num-requests 50 \
   --randomness 0.5 --concurrencies 16
 ```
