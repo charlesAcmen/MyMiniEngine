@@ -133,7 +133,11 @@ async def _stream_response(
         )
         if output.finished:
             chunk = _make_stream_chunk(
-                req.request_id, model, content="", finish_reason="stop"
+                req.request_id,
+                model,
+                content="",
+                finish_reason="length" if req.is_finished else "stop",
+                usage=_usage_for(req),
             )
             yield f"data: {json.dumps(chunk)}\n\n"
             yield "data: [DONE]\n\n"
@@ -202,7 +206,7 @@ def _make_completion_response(req: Request, model: str, text: str) -> dict:
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop",
+                "finish_reason": "length" if req.is_finished else "stop",
             }
         ],
         "usage": _usage_for(req),
