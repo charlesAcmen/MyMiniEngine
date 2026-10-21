@@ -164,8 +164,9 @@ def _make_stream_chunk(
     model: str,
     content: str,
     finish_reason: str | None = None,
+    usage: dict[str, int] | None = None,
 ) -> dict:
-    return {
+    chunk = {
         "id": f"chatcmpl-{request_id}",
         "object": "chat.completion.chunk",
         "created": int(time.time()),
@@ -177,6 +178,17 @@ def _make_stream_chunk(
                 "finish_reason": finish_reason,
             }
         ],
+    }
+    if usage is not None:
+        chunk["usage"] = usage
+    return chunk
+
+
+def _usage_for(req: Request) -> dict[str, int]:
+    return {
+        "prompt_tokens": req.num_input_tokens,
+        "completion_tokens": req.num_output_tokens,
+        "total_tokens": req.num_input_tokens + req.num_output_tokens,
     }
 
 
@@ -193,9 +205,5 @@ def _make_completion_response(req: Request, model: str, text: str) -> dict:
                 "finish_reason": "stop",
             }
         ],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        },
+        "usage": _usage_for(req),
     }
