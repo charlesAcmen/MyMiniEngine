@@ -37,8 +37,9 @@ class Scheduler:
         stop()             — gracefully shut down
 
     Internal (called from the scheduler thread):
-        step()              — preserved naive once-at-a-time baseline
-        step_static_batch() — M1 static-batch iteration
+        step()                    — preserved naive once-at-a-time baseline
+        step_static_batch()       — M1 static-batch iteration
+        step_continuous_batch()   — M1 Part B iteration-level batching
     """
 
     def __init__(self, engine: Engine, max_running: int = 16):
@@ -94,7 +95,7 @@ class Scheduler:
                 time.sleep(0.005)  # idle sleep to avoid busy-waiting
                 continue
             try:
-                self.step_static_batch()
+                self.step_continuous_batch()
             except Exception:
                 logger.exception("Scheduler step failed")
 
@@ -179,6 +180,68 @@ class Scheduler:
 
         surviving_requests: list[Request] = []
         #active_requests[i] ↔ token_ids[i]
+        for req, token_id in zip(active_requests, token_ids):
+            req.output_ids.append(token_id)
+            self._stream_token(req, token_id)
+
+            if self._check_finished(req, token_id):
+                self._finish_request(req, finished)
+            else:
+                surviving_requests.append(req)
+
+        self.running = surviving_requests
+        return finished
+
+    def step_continuous_batch(self) -> list[Request]:
+        """Run one M1 Part B iteration-level continuous-batching step.
+
+        Phase 1 fills every currently free scheduler slot in FCFS order. Each
+        prompt still needs its own prefill forward pass because prompt lengths
+        are ragged, and therefore each request retains ownership of a compact
+        batch-size-one KV cache. Phase 2 immediately decodes every surviving
+        request, including requests admitted during this same iteration.
+
+        A completed request releases its KV cache before this method returns.
+        Its slot can consequently be admitted on the next scheduler iteration,
+        without waiting for unrelated requests in the batch to finish.
+        """
+        finished: list[Request] = []
+
+        # A slot is free whenever no RUNNING request currently owns its KV cache.
+        with self._lock:
+            admitted_requests = [
+                self.waiting.popleft()
+                for _ in range(
+                    min(self.max_running - len(self.running), len(self.waiting))
+                )
+            ]
+
+        # Prefill produces each request's first sampled token and compact KV cache.
+        for req in admitted_requests:
+            req.status = RequestStatus.RUNNING
+            token_id = self.engine.prefill(req)
+            req.output_ids.append(token_id)
+            self._stream_token(req, token_id)
+
+            if self._check_finished(req, token_id):
+                self._finish_request(req, finished)
+            else:
+                self.running.append(req)
+
+        if not self.running:
+            return finished
+
+        # The engine builds only a temporary padded GPU KV workspace for this call.
+        # It restores one compact KV cache per request before returning token_ids.
+        active_requests = self.running
+        token_ids = self.engine.batched_decode(active_requests)
+        if len(token_ids) != len(active_requests):
+            raise RuntimeError(
+                "batched_decode must return one token for every running request"
+            )
+
+        surviving_requests: list[Request] = []
+        # Request/token index alignment is the scheduler-to-engine batch invariant.
         for req, token_id in zip(active_requests, token_ids):
             req.output_ids.append(token_id)
             self._stream_token(req, token_id)
