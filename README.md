@@ -33,7 +33,7 @@ The engine serves an OpenAI-compatible API and is structured so that the **sched
 pip install -e .
 
 # Launch the local model (no Hugging Face cache or network access).
-python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16
+python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16 --max-running 16
 
 # Test with curl
 curl http://localhost:8000/v1/chat/completions \
@@ -61,8 +61,9 @@ truncated/padded to the target input length. The serving benchmark has no
 online dataset fallback.
 
 ```bash
-python -m benchmark.bench_serving --model models/Qwen3-0.6B \ --num-requests 50 \
-  --randomness 0.5 --concurrencies 16
+python -m benchmark.bench_serving --model models/Qwen3-0.6B \
+  --input-len 512 --output-len 256 --num-requests 50 \
+  --input-len-min-ratio 1.0 --concurrencies 1,4,8,16
 ```
 
 **Key flags:**
@@ -70,12 +71,13 @@ python -m benchmark.bench_serving --model models/Qwen3-0.6B \ --num-requests 50 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--input-len` | 512 | Target input length (tokens);|
-| `--output-len` | 256 | Target output length (tokens); |
-| `--randomness` | 1.0 | Length randomness: `1.0` = all requests use exact target lengths; `0.0` = uniform random from `[1, target]`; `0.5` = uniform from `[target/2, target]` |
+| `--output-len` | unset | Fixed sampled output length. Enables benchmark-only `ignore_eos`, so every request performs exactly this many decode steps. Mutually exclusive with `--max-tokens`. |
+| `--max-tokens` | 256 | Natural-mode output cap. The server stops earlier at EOS; use this to observe a production-like output-length distribution. |
+| `--input-len-min-ratio` | 1.0 | Shortest input as a fraction of `--input-len`: `1.0` = fixed input length; `0.5` = uniform from `[50%, 100%]`; `0.0` = uniform from chat-template overhead to 100%. It never changes an explicit `--output-len`. |
 | `--concurrencies` | 1,2,4,8,16,32 | Concurrency levels to sweep |
 | `--num-requests` | 100 | Total requests per concurrency level |
 
-**Reports per concurrency level:** TTFT p50/p99, completion latency p50/p99, TPOT p50/p99, generation throughput (tok/s).
+**Reports per concurrency level:** TTFT p50/p99, completion latency p50/p99, TPOT p50/p99, generation throughput (tok/s). Completion-token metrics come from the server's final `usage.completion_tokens`, not decoded text chunks.
 
 ### Accuracy Benchmark (`bench_accuracy.py`)
 

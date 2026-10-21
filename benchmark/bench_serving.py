@@ -8,7 +8,7 @@ padded to the target input length.
 Usage:
     # Start the server first, then:
     python -m benchmark.bench_serving
-    python -m benchmark.bench_serving --input-len 512 --output-len 256 --randomness 0.5
+    python -m benchmark.bench_serving --input-len 512 --output-len 256 --input-len-min-ratio 0.5
     python -m benchmark.bench_serving --concurrencies 1,2,4,8,16,32
 
 Reports per concurrency level:
@@ -167,15 +167,16 @@ def prepare_requests(
     input_len: int,
     output_len: int | None,
     max_tokens: int,
-    randomness: float,
+    input_len_min_ratio: float,
 ) -> list[dict]:
     """
-    Prepare requests with controlled, exact input/output length targets.
+    Prepare requests with controlled input lengths and either fixed or natural output.
 
-    randomness:
-        1.0 = all requests use exactly (input_len, output_len)
-        0.0 = uniform random from [1, input_len] and [1, output_len]
-        0.5 = uniform random from [input_len/2, input_len] etc.
+    input_len_min_ratio:
+        Shortest input as a fraction of input_len.  1.0 makes every input
+        exact; 0.5 samples uniformly from [50%, 100%].  When output_len is
+        provided, every request samples exactly that many tokens.  Natural
+        mode ends at EOS or max_tokens; its actual length comes from usage.
     """
     template_overhead = len(
         chat_template_token_ids(tokenizer, [{"role": "user", "content": ""}])
@@ -190,15 +191,13 @@ def prepare_requests(
     consumed_prompts = 0
     for i in range(num_requests):
         # Compute this request's target lengths
-        if randomness >= 1.0:
+        if input_len_min_ratio >= 1.0:
             req_input_len = input_len
-            req_output_len = output_len
         else:
-            lo_frac = randomness  # e.g. 0.5 → sample from [50%, 100%] of target
+            lo_frac = input_len_min_ratio# e.g. 0.5 → sample from [50%, 100%] of target
             min_in = max(template_overhead, int(input_len * lo_frac))
-            min_out = max(1, int(output_len * lo_frac))
             req_input_len = random.randint(min_in, input_len)
-            req_output_len = random.randint(min_out, output_len)
+        req_output_len = output_len
 
         content_len = req_input_len - template_overhead
         prompt_parts: list[str] = []
@@ -225,9 +224,10 @@ def prepare_requests(
         requests.append(
             {
                 "messages": messages,
-                "max_tokens": req_output_len,
+                "max_tokens": req_output_len if req_output_len is not None else max_tokens,
                 "input_len": actual_input_len,
                 "output_len": req_output_len,
+                "fixed_output": req_output_len is not None,
             }
         )
 
@@ -428,8 +428,10 @@ def main():
         "--max-tokens", type=int, default=256,
         help="Natural-mode output cap; EOS may end a request earlier (default: 256)",
     )
-    p.add_argument("--randomness", type=float, default=1.0,
-                   help="Length randomness: 1.0=fixed, 0.0=uniform [1,target], 0.5=[target/2,target]")
+    p.add_argument(
+        "--input-len-min-ratio", type=float, default=1.0,
+        help="Shortest input / --input-len: 1.0=fixed; 0.5=random [50%%,100%%]; 0.0=random [template overhead,100%%]",
+    )
     p.add_argument("--concurrencies", type=str, default="1,2,4,8,16,32",
                    help="Comma-separated concurrency levels to sweep")
     p.add_argument(
@@ -446,8 +448,15 @@ def main():
     if args.max_tokens is not None and args.max_tokens < 1:
         p.error("--max-tokens must be at least 1")
 
+    if not 0.0 <= args.input_len_min_ratio <= 1.0:
+        p.error("--input-len-min-ratio must be in [0.0, 1.0]")
+    try:
+        concurrencies = [int(x) for x in args.concurrencies.split(",")]
+    except ValueError:
+        p.error("--concurrencies must be comma-separated positive integers")
+    if not concurrencies or any(value < 1 for value in concurrencies):
+        p.error("--concurrencies must be comma-separated positive integers")
     random.seed(args.seed)
-    concurrencies = [int(x) for x in args.concurrencies.split(",")]
 
     # Auto-detect model from server
     model_id = args.model
@@ -471,7 +480,7 @@ def main():
         print(f"  Output mode  : fixed ({args.output_len} sampled tokens; ignore_eos=true)")
     else:
         print(f"  Output mode  : natural (max_tokens={args.max_tokens}; EOS enabled)")
-    print(f"  Randomness   : {args.randomness}")
+    print(f"  Input min    : {args.input_len_min_ratio:.2f} x target")
     print(f"  Concurrencies: {concurrencies}")
     print(f"  Prompt data  : {args.prompt_data_dir}")
     print(f"{'=' * 60}")
@@ -488,13 +497,17 @@ def main():
     print(f"  Preparing {args.num_requests} requests...", flush=True)
     requests_pool = prepare_requests(
         prompts, tokenizer, args.num_requests,
-        args.input_len, args.output_len, args.randomness,
+        args.input_len, args.output_len, args.max_tokens, args.input_len_min_ratio,
     )
     actual_in = [r["input_len"] for r in requests_pool]
-    actual_out = [r["output_len"] for r in requests_pool]
+    actual_out = [r["output_len"] for r in requests_pool if r["output_len"] is not None]
+    output_summary = (
+        f"  Output targets: min={min(actual_out)}, max={max(actual_out)}, mean={sum(actual_out)/len(actual_out):.0f}"
+        if actual_out else "  Output targets: natural EOS (actual lengths reported by server usage)"
+    )
     print(
         f"  Input lengths:  min={min(actual_in)}, max={max(actual_in)}, mean={sum(actual_in)/len(actual_in):.0f}\n"
-        f"  Output lengths: min={min(actual_out)}, max={max(actual_out)}, mean={sum(actual_out)/len(actual_out):.0f}",
+        + output_summary,
         flush=True,
     )
     del tokenizer
