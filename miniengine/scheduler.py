@@ -123,6 +123,7 @@ class Scheduler:
         req.status = RequestStatus.RUNNING
         token_id = self.engine.prefill(req)
         req.output_ids.append(token_id)
+        self.engine.validate_decode_admission(req)
         self._stream_token(req, token_id)
 
         # ── Decode until finished ───────────────────────────────────────
@@ -160,6 +161,7 @@ class Scheduler:
                 token_id = self.engine.prefill(req)
                 #new token id appended
                 req.output_ids.append(token_id)
+                self.engine.validate_decode_admission(req)
                 #Push a generated token into the request's streaming queue.
                 self._stream_token(req, token_id)
 
@@ -221,6 +223,7 @@ class Scheduler:
             req.status = RequestStatus.RUNNING
             token_id = self.engine.prefill(req)
             req.output_ids.append(token_id)
+            self.engine.validate_decode_admission(req)
             self._stream_token(req, token_id)
 
             if self._check_finished(req, token_id):

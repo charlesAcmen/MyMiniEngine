@@ -114,6 +114,39 @@ class Engine:
         """Decode a single token id back to a string."""
         return self.tokenizer.decode([token_id], skip_special_tokens=True)
 
+    def validate_decode_admission(self, request: Request) -> None:
+        """Validate the compact-KV invariant once before batched decode.
+
+        Scheduler admission calls this after prefill has created the request's
+        KV cache and appended its first output token. Keeping these checks at
+        that state transition avoids repeating Python validation on each
+        subsequent decode step.
+        """
+        if not request.output_ids:
+            raise ValueError("batched decode requires a previously generated token")
+
+        expected_layers = len(self.model.model.layers)
+        if request.kv_cache is None or len(request.kv_cache) != expected_layers:
+            raise ValueError("request must own one initialized KV cache per model layer")
+
+        model_parameter = next(self.model.parameters())
+        model_device = model_parameter.device
+        model_dtype = model_parameter.dtype
+        first_key, first_value = request.kv_cache[0]
+        if first_key.ndim != 4 or first_key.shape != first_value.shape:
+            raise ValueError("each request must have matching rank-four K/V tensors")
+
+        cache_len = first_key.shape[2]
+        for key, value in request.kv_cache:
+            if key.ndim != 4 or key.shape != value.shape or key.shape[0] != 1:
+                raise ValueError(
+                    "each request KV cache must be matching batch-size-one K/V"
+                )
+            if key.shape[2] != cache_len:
+                raise ValueError("all KV layers for a request must share one cache length")
+            if key.device != model_device or key.dtype != model_dtype:
+                raise ValueError("KV cache device and dtype must match the model")
+
     # ── Forward passes ──────────────────────────────────────────────────
 
     @torch.inference_mode()
