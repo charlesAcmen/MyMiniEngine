@@ -116,7 +116,7 @@ async def chat_completions(raw: ChatCompletionRequest):
 
     # Non-streaming: collect full response
     full_text = await _collect_full_response(req)
-    return _make_completion_response(req.request_id, raw.model or model_id, full_text)
+    return _make_completion_response(req, raw.model or model_id, full_text)
 
 
 # ── Streaming helpers ───────────────────────────────────────────────────
@@ -180,11 +180,9 @@ def _make_stream_chunk(
     }
 
 
-def _make_completion_response(
-    request_id: str, model: str, text: str
-) -> dict:
+def _make_completion_response(req: Request, model: str, text: str) -> dict:
     return {
-        "id": f"chatcmpl-{request_id}",
+        "id": f"chatcmpl-{req.request_id}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
