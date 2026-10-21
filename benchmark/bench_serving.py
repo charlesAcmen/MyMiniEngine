@@ -455,6 +455,10 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
+    if args.num_requests < 1:
+        p.error("--num-requests must be at least 1")
+    if args.input_len < 1:
+        p.error("--input-len must be at least 1")
     if args.output_len is not None and args.output_len < 1:
         p.error("--output-len must be at least 1")
     if args.max_tokens is not None and args.max_tokens < 1:
