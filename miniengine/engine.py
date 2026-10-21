@@ -182,43 +182,42 @@ class Engine:
 
         model_parameter = next(self.model.parameters())
         model_device = model_parameter.device
-        #torch.bfloat16
-        model_dtype = model_parameter.dtype
         #for Qwen3-0.6B 28 layers
         num_layers = len(requests[0].kv_cache or [])
-        if num_layers == 0:
-            raise ValueError("batched_decode requires initialized per-layer KV caches")
+        # Admission validates that every request has the expected layer count.
+        # Original hot-path check retained for learning/debug reference:
+        # if num_layers == 0:
+        #     raise ValueError("batched_decode requires initialized per-layer KV caches")
 
         cache_lengths: list[int] = []
         for request in requests:
-            #first token is generated
-            if not request.output_ids:
-                raise ValueError("batched_decode requires a previously generated token")
-            #same model,complete layers of kv cache for each request
-            if request.kv_cache is None or len(request.kv_cache) != num_layers:
-                raise ValueError("all requests must have the same initialized KV layers")
-
+            # Admission establishes these compact-KV invariants once. Keep
+            # the original per-step checks commented for future inspection.
+            # if not request.output_ids:
+            #     raise ValueError("batched_decode requires a previously generated token")
+            # if request.kv_cache is None or len(request.kv_cache) != num_layers:
+            #     raise ValueError("all requests must have the same initialized KV layers")
             first_key, first_value = request.kv_cache[0]
             #k、V:(1,Hkv,cache_len,head_dim)
             #for qwen3-0.6B:
             # Hkv      = 8
             # head_dim = 128
-            if first_key.ndim != 4 or first_key.shape != first_value.shape:
-                raise ValueError("each KV cache must be matching rank-four K/V tensors")
+            # if first_key.ndim != 4 or first_key.shape != first_value.shape:
+            #     raise ValueError("each KV cache must be matching rank-four K/V tensors")
             cache_len = first_key.shape[2]
-            for key, value in request.kv_cache:
-                #all kv has same length across all layers
-                #key.shape[0] != 1:(1, Hkv, L_i, D)√(B, Hkv, Lmax, D)×
-                if key.ndim != 4 or key.shape != value.shape or key.shape[0] != 1:
-                    raise ValueError(
-                        "each request KV cache must be matching batch-size-one K/V"
-                    )
-                if key.shape[2] != cache_len:
-                    raise ValueError(
-                        "all KV layers for a request must share one cache length"
-                    )
-                if key.device != model_device or key.dtype != model_dtype:
-                    raise ValueError("KV cache device and dtype must match the model")
+            # for key, value in request.kv_cache:
+            #     all KV layers have the same cache length and ownership.
+            #key.shape[0] != 1:(1, Hkv, L_i, D)√(B, Hkv, Lmax, D)×
+            #     if key.ndim != 4 or key.shape != value.shape or key.shape[0] != 1:
+            #         raise ValueError(
+            #             "each request KV cache must be matching batch-size-one K/V"
+            #         )
+            #     if key.shape[2] != cache_len:
+            #         raise ValueError(
+            #             "all KV layers for a request must share one cache length"
+            #         )
+            #     if key.device != model_device or key.dtype != model_dtype:
+            #         raise ValueError("KV cache device and dtype must match the model")
             cache_lengths.append(cache_len)
 
         batch_size = len(requests)
