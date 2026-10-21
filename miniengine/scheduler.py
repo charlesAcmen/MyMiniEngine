@@ -260,7 +260,7 @@ class Scheduler:
         """Decide whether a request should stop generating."""
         if req.is_finished:
             return True
-        if self.engine.is_stop_token(token_id):
+        if not req.sampling_params.ignore_eos and self.engine.is_stop_token(token_id):
             return True
         return False
 

@@ -258,6 +258,8 @@ async def send_request(
         "temperature": 0,
         "stream": True,
     }
+    if request["fixed_output"]:
+        payload["ignore_eos"] = True
 
     metrics.start_time = time.perf_counter()
     try:

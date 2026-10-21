@@ -34,6 +34,8 @@ class SamplingParams:
     top_p: float = 0.95
     top_k: int = 20
     repetition_penalty: float = 1.0
+    # Benchmark-only: continue to the length limit even after an EOS token.
+    ignore_eos: bool = False
     # If temperature == 0 → greedy decoding (argmax)
 
 

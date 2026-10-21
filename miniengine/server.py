@@ -54,6 +54,9 @@ class ChatCompletionRequest(BaseModel):
     top_p: float | None = Field(default=0.95)
     top_k: int | None = Field(default=20)
     repetition_penalty: float | None = Field(default=1.0)
+    # Kept false for normal chat.  The serving benchmark enables it to make
+    # every request execute an exactly controlled number of decode steps.
+    ignore_eos: bool = False
     stream: bool = False
 
 
@@ -88,13 +91,14 @@ async def chat_completions(raw: ChatCompletionRequest):
     input_ids = engine.tokenize_messages(messages)
 
     sampling_params = SamplingParams(
-        max_new_tokens=raw.max_tokens or 256,
+        max_new_tokens=raw.max_tokens if raw.max_tokens is not None else 256,
         temperature=raw.temperature if raw.temperature is not None else 0.6,
         top_p=raw.top_p if raw.top_p is not None else 0.95,
         top_k=raw.top_k if raw.top_k is not None else 20,
         repetition_penalty=(
             raw.repetition_penalty if raw.repetition_penalty is not None else 1.0
         ),
+        ignore_eos=raw.ignore_eos,
     )
 
     req = Request(
