@@ -28,6 +28,7 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer
 
 from miniengine.core import Request
+from miniengine.kv_memory_pool import KVMemoryPool
 from miniengine.model import CausalLM, ModelConfig, load_weights, require_local_model_dir
 from miniengine.sampler import sample_token
 
@@ -75,6 +76,14 @@ class Engine:
         load_weights(self.model, str(local_model_path), dtype=dtype, device=device)
         self.model.eval()
 
+        # The Engine owns the pool because the pool layout is fixed by this
+        # model's architecture, dtype, and accelerator device for its whole lifetime.
+        self.kv_pool = self._create_kv_pool(
+            config=config,
+            page_size=page_size,
+            mem_fraction_static=mem_fraction_static,
+        )
+
         # ── Stop tokens ─────────────────────────────────────────────────
         self.stop_token_ids: set[int] = set()
         if self.tokenizer.eos_token_id is not None:
@@ -93,6 +102,54 @@ class Engine:
             len(self.tokenizer),
             self.stop_token_ids,
             sum(p.numel() for p in self.model.parameters()) // 1_000_000,
+        )
+
+    def _create_kv_pool(
+        self,
+        config: ModelConfig,
+        page_size: int,
+        mem_fraction_static: float,
+    ) -> KVMemoryPool:
+        """Pre-allocate this Engine's fixed accelerator KV capacity.
+
+        ``mem_fraction_static`` bounds model weights plus this pool as a
+        fraction of total device memory.  Runtime activations and temporary
+        workspaces must fit in the remaining memory, so this pool never grows.
+        """
+        device = torch.device(self.device)
+        try:
+            _, total_bytes = torch.accelerator.memory.get_memory_info(device)
+        except (RuntimeError, NotImplementedError) as exc:
+            raise RuntimeError(
+                f"cannot derive a KV pool budget for {device}: its PyTorch backend "
+                "does not expose accelerator memory information"
+            ) from exc
+        weight_bytes = sum(parameter.numel() * parameter.element_size() for parameter in self.model.parameters())
+        static_budget = int(total_bytes * mem_fraction_static)
+        kv_budget = static_budget - weight_bytes
+        if kv_budget <= 0:
+            raise ValueError(
+                "static-memory budget cannot hold the loaded model weights: "
+                f"weights={weight_bytes} bytes, static_budget={static_budget} bytes; "
+                "increase --mem-fraction-static"
+            )
+
+        logger.info(
+            "Pre-allocating KV pool: static budget=%.2f GB, model weights=%.2f GB, "
+            "KV budget=%.2f GB, page_size=%d tokens",
+            static_budget / 1e9,
+            weight_bytes / 1e9,
+            kv_budget / 1e9,
+            page_size,
+        )
+        return KVMemoryPool.from_budget(
+            num_layers=config.num_hidden_layers,
+            num_kv_heads=config.num_key_value_heads,
+            head_dim=config.head_dim,
+            page_size=page_size,
+            dtype=self.dtype,
+            device=self.device,
+            bytes_budget=kv_budget,
         )
 
     # ── Tokenization ────────────────────────────────────────────────────
