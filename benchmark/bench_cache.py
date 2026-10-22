@@ -52,6 +52,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import aiohttp
 
+from miniengine.cli import non_negative_int, positive_int
+
 
 # ── Sample bookkeeping ─────────────────────────────────────────────────
 
@@ -450,10 +452,10 @@ def main() -> None:
         "and N unique tails.  multiturn: many sessions, each with a "
         "growing conversation.",
     )
-    p.add_argument("--concurrency", type=int, default=8)
+    p.add_argument("--concurrency", type=positive_int, default=8)
     p.add_argument(
         "--max-tokens",
-        type=int,
+        type=positive_int,
         default=64,
         help="Max generation length per request.  Lower values shift "
         "the bench toward prefill-dominated (where cache wins are "
@@ -462,34 +464,34 @@ def main() -> None:
     # shared-specific
     p.add_argument(
         "--num-groups",
-        type=int,
+        type=positive_int,
         default=10,
         help="shared workload: number of independent groups (each "
         "with its own shared prefix).",
     )
     p.add_argument(
         "--questions-per-group",
-        type=int,
+        type=positive_int,
         default=10,
         help="shared workload: questions per group, all sharing that "
         "group's prefix.",
     )
     p.add_argument(
         "--shared-prefix-len",
-        type=int,
+        type=positive_int,
         default=500,
         help="shared workload: target tokens in each group's prefix.",
     )
     p.add_argument(
         "--question-len",
-        type=int,
+        type=non_negative_int,
         default=0,
         help="shared workload: target tokens per unique question tail "
         "(0 = use the bare canned question, ~5–10 tokens).",
     )
     # multiturn-specific
-    p.add_argument("--num-sessions", type=int, default=16)
-    p.add_argument("--turns-per-session", type=int, default=5)
+    p.add_argument("--num-sessions", type=positive_int, default=16)
+    p.add_argument("--turns-per-session", type=positive_int, default=5)
     args = p.parse_args()
 
     print(f"  Server      : {args.base_url}")

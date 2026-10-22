@@ -36,6 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import aiohttp
 import numpy as np
 
+from miniengine.cli import positive_int, positive_int_csv, unit_interval
+
 
 # ── Per-request metrics ────────────────────────────────────────────────
 
@@ -428,23 +430,23 @@ def main():
     p.add_argument("--base-url", type=str, default="http://localhost:8000")
     p.add_argument("--model", type=str, default=None,
                    help="HuggingFace model id (for tokenizer). Auto-detected from server if not set.")
-    p.add_argument("--num-requests", type=int, default=100)
-    p.add_argument("--input-len", type=int, default=512,
+    p.add_argument("--num-requests", type=positive_int, default=100)
+    p.add_argument("--input-len", type=positive_int, default=512,
                    help="Target input length in tokens")
     output_group = p.add_mutually_exclusive_group()
     output_group.add_argument(
-        "--output-len", type=int, default=None,
+        "--output-len", type=positive_int, default=None,
         help="Fixed sampled output length; enables benchmark-only ignore_eos",
     )
     output_group.add_argument(
-        "--max-tokens", type=int, default=256,
+        "--max-tokens", type=positive_int, default=256,
         help="Natural-mode output cap; EOS may end a request earlier (default: 256)",
     )
     p.add_argument(
-        "--input-len-min-ratio", type=float, default=1.0,
+        "--input-len-min-ratio", type=unit_interval, default=1.0,
         help="Shortest input / --input-len: 1.0=fixed; 0.5=random [50%%,100%%]; 0.0=random [template overhead,100%%]",
     )
-    p.add_argument("--concurrencies", type=str, default="1,2,4,8,16,32",
+    p.add_argument("--concurrencies", type=positive_int_csv, default="1,2,4,8,16,32",
                    help="Comma-separated concurrency levels to sweep")
     p.add_argument(
         "--prompt-data-dir",
@@ -455,23 +457,7 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
-    if args.num_requests < 1:
-        p.error("--num-requests must be at least 1")
-    if args.input_len < 1:
-        p.error("--input-len must be at least 1")
-    if args.output_len is not None and args.output_len < 1:
-        p.error("--output-len must be at least 1")
-    if args.max_tokens is not None and args.max_tokens < 1:
-        p.error("--max-tokens must be at least 1")
-
-    if not 0.0 <= args.input_len_min_ratio <= 1.0:
-        p.error("--input-len-min-ratio must be in [0.0, 1.0]")
-    try:
-        concurrencies = [int(x) for x in args.concurrencies.split(",")]
-    except ValueError:
-        p.error("--concurrencies must be comma-separated positive integers")
-    if not concurrencies or any(value < 1 for value in concurrencies):
-        p.error("--concurrencies must be comma-separated positive integers")
+    concurrencies = args.concurrencies
     random.seed(args.seed)
 
     # Auto-detect model from server

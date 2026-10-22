@@ -14,12 +14,13 @@ import logging
 import torch
 import uvicorn
 
+from miniengine.cli import open_unit_interval, port_number, positive_int
 from miniengine.engine import Engine
 from miniengine.scheduler import Scheduler
 from miniengine import server as srv
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="miniengine",
         description="Minimal LLM serving engine",
@@ -28,7 +29,7 @@ def parse_args() -> argparse.Namespace:
         "--model", type=str, required=True, help="HuggingFace model id or local path"
     )
     p.add_argument("--host", type=str, default="0.0.0.0")
-    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--port", type=port_number, default=8000)
     p.add_argument(
         "--dtype",
         type=str,
@@ -40,23 +41,23 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--max-running",
-        type=int,
+        type=positive_int,
         default=16,
         help="Max concurrent requests in the scheduler",
     )
     p.add_argument(
         "--page-size",
-        type=int,
+        type=positive_int,
         default=32,
         help="KV-cache tokens per physical page (default: 32)",
     )
     p.add_argument(
         "--mem-fraction-static",
-        type=float,
+        type=open_unit_interval,
         default=0.80,
         help="Fraction of GPU memory reserved for model weights plus the fixed KV pool",
     )
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def main() -> None:

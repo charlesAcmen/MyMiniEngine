@@ -29,6 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import aiohttp
 from datasets import load_dataset
 
+from miniengine.cli import positive_int
+
 
 # ── MMLU ────────────────────────────────────────────────────────────────
 
@@ -273,10 +275,10 @@ def main():
     p.add_argument(
         "--dataset", type=str, default="mmlu", choices=["mmlu", "gsm8k"],
     )
-    p.add_argument("--num-samples", type=int, default=200)
-    p.add_argument("--max-tokens", type=int, default=None,
+    p.add_argument("--num-samples", type=positive_int, default=200)
+    p.add_argument("--max-tokens", type=positive_int, default=None,
                    help="Max output tokens (default: 32 for MMLU, 512 for GSM8K)")
-    p.add_argument("--concurrency", type=int, default=8)
+    p.add_argument("--concurrency", type=positive_int, default=8)
     p.add_argument("--base-url", type=str, default="http://localhost:8000")
     p.add_argument(
         "--subjects", type=str, default=None,
