@@ -20,7 +20,7 @@ level.
 ## Fixed-length scaling run
 
 Each concurrency level received 50 requests with exact 512-token inputs and
-256-token output caps (`--randomness 1.0`). This is the appropriate run for
+256-token output caps (the former `--randomness 1.0` flag). This is the appropriate run for
 comparing throughput across batch sizes. The 50 requests are reissued for each
 concurrency level, so the full sweep sends 200 requests.
 
@@ -40,7 +40,7 @@ working expectation of roughly 5–7x at concurrency 16 on this local setup.
 ## Variable-length continuous-batching run
 
 This separate run used 50 requests at `--concurrencies 16` with
-`--randomness 0.5`. Its measured request lengths were intentionally variable:
+the former `--randomness 0.5` flag. Its measured request lengths were intentionally variable:
 
 - Input: min 259, max 511, mean 383 tokens
 - Output cap: min 134, max 254, mean 184 tokens
@@ -72,6 +72,6 @@ mkdir -p benchmark/results
 run_id=$(date +%Y%m%d_%H%M%S)
 python -m benchmark.bench_serving --model models/Qwen3-0.6B \
   --input-len 512 --output-len 256 --num-requests 50 \
-  --randomness 1.0 --concurrencies 1,4,8,16 \
+  --input-len-min-ratio 1.0 --concurrencies 1,4,8,16 \
   | tee "benchmark/results/m1_fixed_${run_id}.txt"
 ```
