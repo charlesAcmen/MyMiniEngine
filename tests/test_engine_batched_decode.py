@@ -99,6 +99,33 @@ class BatchedDecodeTest(unittest.TestCase):
                     batched_value, independent_value, rtol=1e-5, atol=1e-6
                 )
 
+    def test_equal_length_cache_uses_no_mask_and_matches_independent_decode(self) -> None:
+        batched_requests = [
+            self._prefilled_request("left", [2, 3]),
+            self._prefilled_request("right", [4, 5]),
+        ]
+        self.assertEqual(
+            [request.kv_cache[0][0].shape[2] for request in batched_requests],
+            [2, 2],
+        )
+
+        independent_requests = [
+            self._clone_request(request) for request in batched_requests
+        ]
+        expected_tokens = [
+            self.engine.decode_step(request) for request in independent_requests
+        ]
+        actual_tokens = self.engine.batched_decode(batched_requests)
+        self.assertEqual(actual_tokens, expected_tokens)
+
+        for batched, independent in zip(batched_requests, independent_requests):
+            for (batched_key, batched_value), (
+                independent_key,
+                independent_value,
+            ) in zip(batched.kv_cache, independent.kv_cache):
+                torch.testing.assert_close(batched_key, independent_key, rtol=1e-5, atol=1e-6)
+                torch.testing.assert_close(batched_value, independent_value, rtol=1e-5, atol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main()

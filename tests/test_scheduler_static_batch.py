@@ -24,6 +24,7 @@ class FakeEngine:
         self.stop_tokens = stop_tokens or set()
         self.prefill_calls: list[str] = []
         self.batched_decode_calls: list[list[str]] = []
+        self.decode_admission_validations: list[str] = []
 
     def prefill(self, request: Request) -> int:
         self.prefill_calls.append(request.request_id)
@@ -36,6 +37,9 @@ class FakeEngine:
             self.decode_tokens[request.request_id].popleft()
             for request in requests
         ]
+
+    def validate_decode_admission(self, request: Request) -> None:
+        self.decode_admission_validations.append(request.request_id)
 
     def is_stop_token(self, token_id: int) -> bool:
         return token_id in self.stop_tokens
@@ -78,6 +82,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
 
         self.assertEqual(scheduler.step_static_batch(), [])
         self.assertEqual(engine.prefill_calls, ["one", "two"])
+        self.assertEqual(engine.decode_admission_validations, ["one", "two"])
         self.assertEqual(
             [request.request_id for request in scheduler.running], ["one", "two"]
         )
@@ -166,6 +171,22 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         self.assertEqual(self._drain_stream(request)[-1], (-1, "", True))
         self.assertEqual(scheduler.total_finished, 1)
         self.assertEqual(scheduler.total_generated_tokens, 1)
+
+    def test_ignore_eos_runs_to_the_configured_length(self) -> None:
+        engine = FakeEngine(
+            prefill_tokens={"fixed": 99},
+            decode_tokens={"fixed": [10, 11]},
+            stop_tokens={99},
+        )
+        scheduler = Scheduler(engine, max_running=1)
+        request = self._request("fixed", max_new_tokens=3)
+        request.sampling_params.ignore_eos = True
+        scheduler.add_request(request)
+
+        self.assertEqual(scheduler.step_static_batch(), [])
+        self.assertEqual(scheduler.step_static_batch(), [])
+        self.assertEqual(scheduler.step_static_batch(), [request])
+        self.assertEqual(request.output_ids, [99, 10, 11])
 
 
 class ContinuousBatchSchedulerTest(unittest.TestCase):
