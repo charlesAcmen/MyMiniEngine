@@ -47,7 +47,7 @@ Your pool should:
   **page tables**.
 
 Make `page_size` an **adjustable CLI parameter** (e.g.,
-`--page-size`, default 32). Smaller pages waste less KV at the tail
+`--page-size`, default 32 **tokens per physical KV page**). Smaller pages waste less KV at the tail
 of each sequence; larger pages keep page tables small. The effect on
 raw decode speed is usually minor.
 
@@ -164,7 +164,7 @@ Your engine must accept the following flags:
 |------|-------------|
 | `--mode paged` | Selects the paged engine path (in addition to the milestone-1 modes). |
 | `--mem-fraction-static` | Fraction of total GPU memory pre-allocated for static tensors (model weights + KV cache pool). The pool capacity is derived from this. |
-| `--page-size` | Tokens per page in the KV pool. |
+| `--page-size` | Tokens per physical page in the KV pool (default: 32). |
 | `--torch-compile` | Enables `torch.compile` on your chosen sub-region. |
 
 Optional (extra credit):
