@@ -50,8 +50,15 @@ curl http://localhost:8000/v1/chat/completions \
 
 Two benchmarks are provided. Both send requests to a **running** MiniEngine server.
 ```bash
-python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16
+python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16 --page-size 32
 ```
+
+`--page-size` is the number of **tokens** stored by one physical KV-cache
+page (default: 32).  It is a server-startup setting: the benchmark programs
+only send HTTP requests to an already-running server, so changing page size
+means restarting that server with the desired flag.  `--mem-fraction-static`
+(default: `0.80`) bounds model weights plus the fixed pre-allocated KV pool as
+a fraction of total GPU memory.
 
 ### Serving Benchmark (`bench_serving.py`)
 
