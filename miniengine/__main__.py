@@ -44,6 +44,18 @@ def parse_args() -> argparse.Namespace:
         default=16,
         help="Max concurrent requests in the scheduler",
     )
+    p.add_argument(
+        "--page-size",
+        type=int,
+        default=32,
+        help="KV-cache tokens per physical page (default: 32)",
+    )
+    p.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=0.80,
+        help="Fraction of GPU memory reserved for model weights plus the fixed KV pool",
+    )
     return p.parse_args()
 
 
@@ -60,7 +72,13 @@ def main() -> None:
     dtype = getattr(torch, args.dtype)
     logger.info("Initializing engine  model=%s  dtype=%s", args.model, args.dtype)
 
-    engine = Engine(model_path=args.model, dtype=dtype, device=args.device)
+    engine = Engine(
+        model_path=args.model,
+        dtype=dtype,
+        device=args.device,
+        page_size=args.page_size,
+        mem_fraction_static=args.mem_fraction_static,
+    )
     sched = Scheduler(engine=engine, max_running=args.max_running)
 
     # Wire up the server module globals
