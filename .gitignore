@@ -57,6 +57,7 @@ Thumbs.db
 *.pt
 *.pth
 *.gguf
+*.deb
 
 # Locally downloaded benchmark datasets
 data/
