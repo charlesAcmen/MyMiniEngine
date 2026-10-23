@@ -48,8 +48,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--page-size",
         type=positive_int,
-        default=32,
-        help="KV-cache tokens per physical page (default: 32)",
+        default=256,
+        help="KV-cache tokens per physical page (default: 256)",
     )
     p.add_argument(
         "--mem-fraction-static",

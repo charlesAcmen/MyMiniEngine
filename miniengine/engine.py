@@ -43,7 +43,7 @@ class Engine:
         model_path: str,
         dtype: torch.dtype = torch.bfloat16,
         device: str = "cuda",
-        page_size: int = 32,
+        page_size: int = 256,
         mem_fraction_static: float = 0.80,
     ):
         self.device = device
