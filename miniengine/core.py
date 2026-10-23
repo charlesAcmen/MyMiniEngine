@@ -59,6 +59,12 @@ class Request:
     # Per-request KV cache (set by Engine during prefill, updated on each decode)
     kv_cache: Any = None
 
+    # M2 paged-KV ownership. ``page_table`` maps logical pages for this
+    # request to physical KVMemoryPool page indices; ``kv_seq_len`` counts
+    # committed token slots in those pages.
+    page_table: list[int] = field(default_factory=list)
+    kv_seq_len: int = 0
+
     # Streaming output channel — scheduler pushes, server consumes
     token_queue: queue.Queue = field(default_factory=queue.Queue)
 
