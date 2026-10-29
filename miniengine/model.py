@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -257,6 +258,118 @@ class Attention(nn.Module):
         out = out.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
         return self.o_proj(out), new_kv
 
+    def forward_paged_prefill(
+        self,
+        hidden: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+        flash_attn_varlen_func: Callable[..., torch.Tensor],
+    ) -> torch.Tensor:
+        """Run packed causal prefill and persist K/V in the page pool.
+
+        ``hidden`` is packed as ``(total_tokens, hidden_size)``. FlashAttention
+        consumes ``(total_tokens, heads, head_dim)`` and ``cu_seqlens`` keeps
+        requests logically separate without padding. The pool write stores
+        rotated K, matching the M1 cache semantics used after RoPE.
+        """
+        total_tokens = hidden.shape[0]
+        #for rotary embedding, we need to add a batch dimension to the hidden tensor
+        hidden_batched = hidden.unsqueeze(0)
+
+        q = self.q_proj(hidden_batched).view(
+            1, total_tokens, self.num_heads, self.head_dim
+        ).transpose(1, 2)
+        k = self.k_proj(hidden_batched).view(
+            1, total_tokens, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+        v = self.v_proj(hidden_batched).view(
+            1, total_tokens, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+
+        q = apply_rotary_emb(self.q_norm(q), cos, sin)
+        k = apply_rotary_emb(self.k_norm(k), cos, sin)
+
+        # FA varlen uses token-major tensors and supports GQA directly, so the
+        # paged path never expands KV heads to the number of query heads.
+        q_tokens = q.squeeze(0).transpose(0, 1).contiguous()
+        k_tokens = k.squeeze(0).transpose(0, 1).contiguous()
+        v_tokens = v.squeeze(0).transpose(0, 1).contiguous()
+
+        # Flatten (physical_page, offset_in_page) into one stable slot axis.
+        # index_copy_ updates the pre-allocated storage without growing it.
+        k_cache.view(-1, self.num_kv_heads, self.head_dim).index_copy_(
+            0, slot_mapping, k_tokens
+        )
+        v_cache.view(-1, self.num_kv_heads, self.head_dim).index_copy_(
+            0, slot_mapping, v_tokens
+        )
+
+        out = flash_attn_varlen_func(
+            q_tokens,
+            k_tokens,
+            v_tokens,
+            cu_seqlens,
+            cu_seqlens,
+            max_seqlen,
+            max_seqlen,
+            causal=True,
+        )
+        out = out.reshape(total_tokens, self.num_heads * self.head_dim)
+        return self.o_proj(out)
+
+    def forward_paged_decode(
+        self,
+        hidden: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        block_table: torch.Tensor,
+        flash_attn_with_kvcache: Callable[..., torch.Tensor],
+    ) -> torch.Tensor:
+        """Append one token per request and attend through physical pages.
+
+        Input and output shapes are ``(batch, 1, hidden_size)``. The FA kernel
+        writes ``k`` and ``v`` in place at each pre-append ``cache_seqlens``
+        position and reads older tokens through ``block_table``.
+        """
+        #[total_tokens, hidden_size] → [batch, 1, hidden_size]
+        batch_size, query_len, _ = hidden.shape
+        q = self.q_proj(hidden).view(
+            batch_size, query_len, self.num_heads, self.head_dim
+        ).transpose(1, 2)
+        k = self.k_proj(hidden).view(
+            batch_size, query_len, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+        v = self.v_proj(hidden).view(
+            batch_size, query_len, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+
+        q = apply_rotary_emb(self.q_norm(q), cos, sin)
+        k = apply_rotary_emb(self.k_norm(k), cos, sin)
+
+        q_decode = q.transpose(1, 2).contiguous()
+        k_decode = k.transpose(1, 2).contiguous()
+        v_decode = v.transpose(1, 2).contiguous()
+        out = flash_attn_with_kvcache(
+            q_decode,
+            k_cache,
+            v_cache,
+            k=k_decode,
+            v=v_decode,
+            cache_seqlens=cache_seqlens,
+            block_table=block_table,
+            causal=True,
+        )
+        out = out.reshape(batch_size, query_len, self.num_heads * self.head_dim)
+        return self.o_proj(out)
+
 
 # ── MLP ─────────────────────────────────────────────────────────────────
 
@@ -309,6 +422,70 @@ class TransformerBlock(nn.Module):
 
         return hidden, new_kv
 
+    def forward_paged_prefill(
+        self,
+        hidden: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+        flash_attn_varlen_func: Callable[..., torch.Tensor],
+    ) -> torch.Tensor:
+        """Run one transformer layer over a packed ragged prefill batch."""
+        residual = hidden
+        hidden = self.input_layernorm(hidden)
+        hidden = self.self_attn.forward_paged_prefill(
+            hidden,
+            cos,
+            sin,
+            k_cache,
+            v_cache,
+            slot_mapping,
+            cu_seqlens,
+            max_seqlen,
+            flash_attn_varlen_func,
+        )
+        hidden = residual + hidden
+
+        residual = hidden
+        hidden = self.post_attention_layernorm(hidden)
+        hidden = self.mlp(hidden)
+        return residual + hidden
+
+    def forward_paged_decode(
+        self,
+        hidden: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        block_table: torch.Tensor,
+        flash_attn_with_kvcache: Callable[..., torch.Tensor],
+    ) -> torch.Tensor:
+        """Run one transformer layer for a one-token paged decode batch."""
+        residual = hidden
+        hidden = self.input_layernorm(hidden)
+        hidden = self.self_attn.forward_paged_decode(
+            hidden,
+            cos,
+            sin,
+            k_cache,
+            v_cache,
+            cache_seqlens,
+            block_table,
+            flash_attn_with_kvcache,
+        )
+        hidden = residual + hidden
+
+        residual = hidden
+        hidden = self.post_attention_layernorm(hidden)
+        hidden = self.mlp(hidden)
+        return residual + hidden
+
 
 # ── Full model ──────────────────────────────────────────────────────────
 
@@ -356,6 +533,62 @@ class TransformerModel(nn.Module):
         hidden = self.norm(hidden)
         return hidden, new_kv_caches
 
+    def forward_paged_prefill(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        kv_caches: Sequence[tuple[torch.Tensor, torch.Tensor]],
+        slot_mapping: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+        flash_attn_varlen_func: Callable[..., torch.Tensor],
+    ) -> torch.Tensor:
+        """Run every layer over one packed token axis without prompt padding."""
+        hidden = self.embed_tokens(input_ids)
+        # RotaryEmbedding keeps its original batch-shaped API. A synthetic
+        # batch dimension represents the one packed token stream; cu_seqlens
+        # still prevents attention from crossing request boundaries.
+        cos, sin = self.rotary_emb(position_ids.unsqueeze(0))
+
+        for layer, (k_cache, v_cache) in zip(self.layers, kv_caches):
+            hidden = layer.forward_paged_prefill(
+                hidden,
+                cos,
+                sin,
+                k_cache,
+                v_cache,
+                slot_mapping,
+                cu_seqlens,
+                max_seqlen,
+                flash_attn_varlen_func,
+            )
+        return self.norm(hidden)
+
+    def forward_paged_decode(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        kv_caches: Sequence[tuple[torch.Tensor, torch.Tensor]],
+        cache_seqlens: torch.Tensor,
+        block_table: torch.Tensor,
+        flash_attn_with_kvcache: Callable[..., torch.Tensor],
+    ) -> torch.Tensor:
+        """Run every layer while all historical K/V stays in the pool."""
+        hidden = self.embed_tokens(input_ids)
+        cos, sin = self.rotary_emb(position_ids)
+        for layer, (k_cache, v_cache) in zip(self.layers, kv_caches):
+            hidden = layer.forward_paged_decode(
+                hidden,
+                cos,
+                sin,
+                k_cache,
+                v_cache,
+                cache_seqlens,
+                block_table,
+                flash_attn_with_kvcache,
+            )
+        return self.norm(hidden)
+
 
 class CausalLM(nn.Module):
     """
@@ -386,11 +619,55 @@ class CausalLM(nn.Module):
         hidden, new_kv_caches = self.model(
             input_ids, position_ids, kv_caches, attention_mask
         )
+        return self._project_logits(hidden), new_kv_caches
+
+    def _project_logits(self, hidden: torch.Tensor) -> torch.Tensor:
+        """Apply the unchanged LM head to contiguous or paged hidden states."""
         if self.config.tie_word_embeddings:
-            logits = F.linear(hidden, self.model.embed_tokens.weight)
-        else:
-            logits = self.lm_head(hidden)
-        return logits, new_kv_caches
+            return F.linear(hidden, self.model.embed_tokens.weight)
+        return self.lm_head(hidden)
+
+    def forward_paged_prefill(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        kv_caches: Sequence[tuple[torch.Tensor, torch.Tensor]],
+        slot_mapping: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+        flash_attn_varlen_func: Callable[..., torch.Tensor],
+    ) -> torch.Tensor:
+        """Return packed logits while writing every layer's K/V into the pool."""
+        hidden = self.model.forward_paged_prefill(
+            input_ids,
+            position_ids,
+            kv_caches,
+            slot_mapping,
+            cu_seqlens,
+            max_seqlen,
+            flash_attn_varlen_func,
+        )
+        return self._project_logits(hidden)
+
+    def forward_paged_decode(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        kv_caches: Sequence[tuple[torch.Tensor, torch.Tensor]],
+        cache_seqlens: torch.Tensor,
+        block_table: torch.Tensor,
+        flash_attn_with_kvcache: Callable[..., torch.Tensor],
+    ) -> torch.Tensor:
+        """Return next-token logits after in-place paged KV append."""
+        hidden = self.model.forward_paged_decode(
+            input_ids,
+            position_ids,
+            kv_caches,
+            cache_seqlens,
+            block_table,
+            flash_attn_with_kvcache,
+        )
+        return self._project_logits(hidden)
 
 
 # ── Weight loading ──────────────────────────────────────────────────────
