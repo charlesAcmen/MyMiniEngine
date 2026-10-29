@@ -95,7 +95,7 @@ class Scheduler:
                 time.sleep(0.005)  # idle sleep to avoid busy-waiting
                 continue
             try:
-                self.step_continuous_batch()
+                self._step_impl()
             except Exception:
                 logger.exception("Scheduler step failed")
 
