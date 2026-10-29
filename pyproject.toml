@@ -19,6 +19,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+paged = [
+    # PyPI 2.8.3.post2 forces C++17 and cannot build against PyTorch 2.14.
+    # This pinned official commit selects C++20 for PyTorch >= 2.13.
+    "flash-attn @ git+https://github.com/Dao-AILab/flash-attention.git@767386d814051d1d853c45ac952d8259b5bc7235",
+    "ninja>=1.11",
+    "packaging>=23.0",
+    "psutil>=5.9",
+]
 bench = [
     "numpy",
     "pyarrow",

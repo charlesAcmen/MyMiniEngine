@@ -30,6 +30,15 @@ from transformers import AutoTokenizer
 from miniengine.core import Request
 from miniengine.kv_memory_pool import KVMemoryPool
 from miniengine.model import CausalLM, ModelConfig, load_weights, require_local_model_dir
+from miniengine.paged_attention import (
+    allocate_prefill_pages,
+    build_packed_prefill,
+    build_paged_decode,
+    commit_decode_batch,
+    commit_prefill,
+    release_request_pages,
+    require_flash_attention,
+)
 from miniengine.sampler import sample_token
 
 logger = logging.getLogger(__name__)
