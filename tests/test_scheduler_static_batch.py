@@ -41,6 +41,10 @@ class FakeEngine:
     def validate_decode_admission(self, request: Request) -> None:
         self.decode_admission_validations.append(request.request_id)
 
+    @staticmethod
+    def release_request(request: Request) -> None:
+        request.kv_cache = None
+
     def is_stop_token(self, token_id: int) -> bool:
         return token_id in self.stop_tokens
 

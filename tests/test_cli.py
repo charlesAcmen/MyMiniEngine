@@ -13,6 +13,11 @@ class ServerCliTests(unittest.TestCase):
     def test_default_page_size_matches_flash_attention_paged_kv(self) -> None:
         args = parse_args(["--model", "local-model"])
         self.assertEqual(args.page_size, 256)
+        self.assertEqual(args.mode, "batched")
+
+    def test_paged_mode_is_selectable(self) -> None:
+        args = parse_args(["--model", "local-model", "--mode", "paged"])
+        self.assertEqual(args.mode, "paged")
 
     def test_valid_pool_flags_are_parsed_before_engine_construction(self) -> None:
         args = parse_args(
