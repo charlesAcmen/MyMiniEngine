@@ -356,6 +356,61 @@ class Engine:
             logits[:, -1, :], request.sampling_params, request.output_ids
         )
 
+    @torch.inference_mode()
+    def paged_decode(self, requests: list[Request]) -> list[int]:
+        """Decode one token per request without constructing temporary KV.
+
+        The FA kernel appends K/V in place. The request-visible committed
+        lengths advance only after every transformer layer finishes.
+        """
+        if not requests:
+            return []
+        if self.flash_attn_with_kvcache is None or self.kv_pool is None:
+            raise RuntimeError("paged_decode requires Engine(mode='paged')")
+        pool = self.kv_pool
+
+        original_page_counts = [len(request.page_table) for request in requests]
+        decode = build_paged_decode(requests, pool)
+        try:
+            logits = self.model.forward_paged_decode(
+                decode.input_ids,
+                decode.position_ids,
+                pool.kv_caches,
+                decode.cache_seqlens,
+                decode.block_table,
+                self.flash_attn_with_kvcache,
+            )
+        except Exception:
+            # A failed layer may have written the uncommitted slot, but
+            # kv_seq_len still hides it. Return only pages added by this call;
+            # a retry overwrites any partial value in an existing tail page.
+            for request, original_count in zip(requests, original_page_counts):
+                newly_allocated = request.page_table[original_count:]
+                pool.free(newly_allocated)
+                del request.page_table[original_count:]
+            raise
+        #transaction
+        commit_decode_batch(requests)
+        return [
+            sample_token(
+                logits[index : index + 1, -1, :],
+                request.sampling_params,
+                request.output_ids,
+            )
+            for index, request in enumerate(requests)
+        ]
+
+    @staticmethod
+    def _release_batched_request(request: Request) -> None:
+        """Release one M1 request's dynamically allocated contiguous KV."""
+        request.kv_cache = None
+
+    def _release_paged_request(self, request: Request) -> None:
+        """Return one paged request's physical pages to this Engine's pool."""
+        if self.kv_pool is None:
+            raise RuntimeError("paged request has no KV pool owner")
+        release_request_pages(request, self.kv_pool)
+
 
     @torch.inference_mode()
     def batched_decode(self, requests: list[Request]) -> list[int]:
