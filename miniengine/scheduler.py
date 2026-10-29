@@ -46,6 +46,18 @@ class Scheduler:
         self.engine = engine
         self.max_running = max_running
 
+        # Engine.mode is the single source of truth. Store the selected bound
+        # method once so every scheduler iteration performs a direct callable
+        # invocation instead of repeating mode dispatch in the hot loop.
+        step_strategies = {
+            "batched": self.step_continuous_batch,
+            "paged": self.step_paged,
+        }
+        try:
+            self._step_impl = step_strategies[engine.mode]
+        except KeyError as exc:
+            raise ValueError(f"unsupported engine mode: {engine.mode}") from exc
+
         # Queues
         self.waiting: deque[Request] = deque()
         self.running: list[Request] = []
