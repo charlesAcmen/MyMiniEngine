@@ -28,6 +28,7 @@ class FakePagedEngine:
         decode_tokens: dict[str, list[int]],
         num_pages: int = 8,
     ) -> None:
+        self.mode = "paged"
         self.kv_pool = KVMemoryPool(
             num_pages=num_pages,
             page_size=4,
@@ -44,6 +45,8 @@ class FakePagedEngine:
         }
         self.prefill_batches: list[list[str]] = []
         self.decode_batches: list[list[str]] = []
+        self.prefill_batch = self.paged_prefill
+        self.decode_batch = self.paged_decode
 
     def paged_prefill(self, requests: list[Request]) -> list[int]:
         self.prefill_batches.append([request.request_id for request in requests])
@@ -86,7 +89,7 @@ class PagedSchedulerTest(unittest.TestCase):
             prefill_tokens={"a": 10, "b": 20},
             decode_tokens={"a": [11], "b": [21]},
         )
-        scheduler = Scheduler(engine, max_running=2, mode="paged")
+        scheduler = Scheduler(engine, max_running=2)
         a = self._request("a", 3)
         b = self._request("b", 5)
         scheduler.add_request(a)
@@ -107,7 +110,7 @@ class PagedSchedulerTest(unittest.TestCase):
             decode_tokens={"large": [11], "small": [21]},
             num_pages=3,  # scratch + two usable pages
         )
-        scheduler = Scheduler(engine, max_running=2, mode="paged")
+        scheduler = Scheduler(engine, max_running=2)
         large = self._request("large", 9)  # three pages: cannot fit
         small = self._request("small", 1)
         scheduler.add_request(large)

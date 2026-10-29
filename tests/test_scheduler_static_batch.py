@@ -16,6 +16,7 @@ class FakeEngine:
         decode_tokens: dict[str, list[int]],
         stop_tokens: set[int] | None = None,
     ) -> None:
+        self.mode = "batched"
         self.prefill_tokens = prefill_tokens
         self.decode_tokens = {
             request_id: deque(tokens)
@@ -25,6 +26,15 @@ class FakeEngine:
         self.prefill_calls: list[str] = []
         self.batched_decode_calls: list[list[str]] = []
         self.decode_admission_validations: list[str] = []
+        self.prefill_batch = self._prefill_batch
+        self.decode_batch = self.batched_decode
+
+    def _prefill_batch(self, requests: list[Request]) -> list[int]:
+        token_ids = []
+        for request in requests:
+            token_ids.append(self.prefill(request))
+            self.validate_decode_admission(request)
+        return token_ids
 
     def prefill(self, request: Request) -> int:
         self.prefill_calls.append(request.request_id)

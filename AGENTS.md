@@ -16,3 +16,6 @@
   non-obvious interfaces. Ask before deleting or materially replacing code.
 - Keep smoke behavior, accuracy, and performance evidence separate. RTX 3060
   12GB is for Qwen3-0.6B debug; final 8B performance belongs on L4 or A6000.
+- After changing Python serving, scheduling, model, or benchmark code, run
+  `scripts/check_part_b.sh` before reporting completion. It is the automatic
+  local gate for unit tests, paged serving smoke, and MMLU accuracy smoke.
