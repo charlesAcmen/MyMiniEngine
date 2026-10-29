@@ -274,6 +274,83 @@ class Scheduler:
         self.running = surviving_requests
         return finished
 
+    def step_paged(self) -> list[Request]:
+        """Run one continuous-batching iteration over the paged KV pool.
+
+        Admission is FCFS and capacity-aware. Newly admitted prompts are
+        flattened into one packed prefill batch, then all surviving requests
+        participate in one paged decode call. Only this scheduler thread owns
+        pool allocation and release, so allocator metadata needs no lock.
+        """
+        finished: list[Request] = []
+        admitted_requests: list[Request] = []
+        pool = self.engine.kv_pool
+        if pool is None:
+            raise RuntimeError("paged scheduler requires Engine(mode='paged')")
+
+        available_pages = pool.num_free
+        available_slots = self.max_running - len(self.running)
+
+        # Stop at the first request that does not fit to preserve strict FCFS.
+        # Later requests never bypass a large prompt at the queue head.
+        with self._lock:
+            for _ in range(min(available_slots, len(self.waiting))):
+                request = self.waiting[0]
+                pages_needed = pool.pages_needed(request.num_input_tokens)
+                if pages_needed > available_pages:
+                    break
+                admitted_requests.append(self.waiting.popleft())
+                available_pages -= pages_needed
+
+        if admitted_requests:
+            for request in admitted_requests:
+                request.status = RequestStatus.RUNNING
+            try:
+                #packed prefill
+                token_ids = self.engine.prefill_batch(admitted_requests)
+            except Exception:
+                # Engine rolls back page ownership. Restore FCFS queue order so
+                # a transient kernel failure does not silently lose requests.
+                with self._lock:
+                    for request in reversed(admitted_requests):
+                        request.status = RequestStatus.WAITING
+                        self.waiting.appendleft(request)
+                raise
+
+            if len(token_ids) != len(admitted_requests):
+                raise RuntimeError(
+                    "paged_prefill must return one token for every admitted request"
+                )
+            for request, token_id in zip(admitted_requests, token_ids):
+                request.output_ids.append(token_id)
+                self._stream_token(request, token_id)
+                if self._check_finished(request, token_id):
+                    self._finish_request(request, finished)
+                else:
+                    self.running.append(request)
+
+        if not self.running:
+            return finished
+
+        active_requests = self.running
+        token_ids = self.engine.decode_batch(active_requests)
+        if len(token_ids) != len(active_requests):
+            raise RuntimeError(
+                "paged_decode must return one token for every running request"
+            )
+
+        surviving_requests: list[Request] = []
+        for request, token_id in zip(active_requests, token_ids):
+            request.output_ids.append(token_id)
+            self._stream_token(request, token_id)
+            if self._check_finished(request, token_id):
+                self._finish_request(request, finished)
+            else:
+                surviving_requests.append(request)
+
+        self.running = surviving_requests
+        return finished
+
     # ── Helpers ─────────────────────────────────────────────────────────
 
     def _check_finished(self, req: Request, token_id: int) -> bool:
