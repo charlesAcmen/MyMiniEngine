@@ -28,6 +28,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--model", type=str, required=True, help="HuggingFace model id or local path"
     )
+    p.add_argument(
+        "--mode",
+        choices=["batched", "paged"],
+        default="batched",
+        help="Serving engine path: preserved M1 baseline or M2 paged KV",
+    )
     p.add_argument("--host", type=str, default="0.0.0.0")
     p.add_argument("--port", type=port_number, default=8000)
     p.add_argument(
@@ -79,6 +85,7 @@ def main() -> None:
         device=args.device,
         page_size=args.page_size,
         mem_fraction_static=args.mem_fraction_static,
+        mode=args.mode,
     )
     sched = Scheduler(engine=engine, max_running=args.max_running)
 

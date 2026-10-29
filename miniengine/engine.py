@@ -54,9 +54,13 @@ class Engine:
         device: str = "cuda",
         page_size: int = 256,
         mem_fraction_static: float = 0.80,
+        mode: str = "batched",
     ):
+        if mode not in {"batched", "paged"}:
+            raise ValueError(f"unsupported engine mode: {mode}")
         self.device = device
         self.dtype = dtype
+        self.mode = mode
         local_model_path = require_local_model_dir(model_path)
 
         # ── Tokenizer files are read from the same local checkpoint. ────
