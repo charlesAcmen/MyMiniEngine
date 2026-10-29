@@ -21,6 +21,7 @@ Design note:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -89,13 +90,40 @@ class Engine:
         load_weights(self.model, str(local_model_path), dtype=dtype, device=device)
         self.model.eval()
 
-        # The Engine owns the pool because the pool layout is fixed by this
+        # The preserved M1 baseline must not reserve paged KV memory: doing so
+        # would reduce its usable batch capacity and invalidate comparisons.
+        # Paged mode owns both the fixed pool and the optional FA extension.
+        self.kv_pool: KVMemoryPool | None = None
+        self.flash_attn_varlen_func = None
+        self.flash_attn_with_kvcache = None
+        if mode == "paged":
+                    # The Engine owns the pool because the pool layout is fixed by this
         # model's architecture, dtype, and accelerator device for its whole lifetime.
-        self.kv_pool = self._create_kv_pool(
-            config=config,
-            page_size=page_size,
-            mem_fraction_static=mem_fraction_static,
-        )
+            self.kv_pool = self._create_kv_pool(
+                config=config,
+                page_size=page_size,
+                mem_fraction_static=mem_fraction_static,
+            )
+            (
+                self.flash_attn_varlen_func,
+                self.flash_attn_with_kvcache,
+            ) = require_flash_attention()
+
+        # Bind the serving strategy once at construction. Scheduler code calls
+        # these stable interfaces without branching on the mode in its hot loop.
+        # The named baseline and paged methods remain public for direct tests
+        # and side-by-side learning comparisons.
+        self.prefill_batch: Callable[[list[Request]], list[int]]
+        self.decode_batch: Callable[[list[Request]], list[int]]
+        self.release_request: Callable[[Request], None]
+        if mode == "paged":
+            self.prefill_batch = self.paged_prefill
+            self.decode_batch = self.paged_decode
+            self.release_request = self._release_paged_request
+        else:
+            self.prefill_batch = self.batched_prefill
+            self.decode_batch = self.batched_decode
+            self.release_request = self._release_batched_request
 
         # ── Stop tokens ─────────────────────────────────────────────────
         self.stop_token_ids: set[int] = set()
