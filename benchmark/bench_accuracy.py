@@ -32,6 +32,25 @@ from datasets import load_dataset
 from miniengine.cli import positive_int
 
 
+# Accuracy datasets are project-owned inputs, just like the local WildChat
+# files used by bench_serving. Resolve the repository root from this module so
+# benchmark data lookup never depends on the caller's working directory.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJECT_ROOT / "data"
+LOCAL_MMLU_DIR = DATA_DIR / "mmlu"
+LOCAL_GSM8K_DIR = DATA_DIR / "gsm8k"
+
+
+def require_local_dataset(path: Path, name: str) -> Path:
+    """Return a local dataset directory or fail without a network fallback."""
+    if not path.is_dir():
+        raise FileNotFoundError(
+            f"Local {name} dataset not found at {path}. "
+            "Download it before running the accuracy benchmark."
+        )
+    return path
+
+
 # ── MMLU ────────────────────────────────────────────────────────────────
 
 MMLU_LABELS = ["A", "B", "C", "D"]
@@ -63,8 +82,9 @@ def parse_mmlu_answer(text: str) -> int | None:
 
 
 def load_mmlu(num_samples: int, subjects: list[str] | None = None):
-    """Load MMLU samples. If subjects is None, sample across all."""
-    ds = load_dataset("cais/mmlu", "all", split="test")
+    """Load local MMLU samples. If subjects is None, sample across all."""
+    dataset_dir = require_local_dataset(LOCAL_MMLU_DIR, "MMLU")
+    ds = load_dataset(str(dataset_dir), "all", split="test")
     if subjects:
         ds = ds.filter(lambda x: x["subject"] in subjects)
     ds = ds.shuffle(seed=42)
@@ -115,7 +135,9 @@ def parse_gsm8k_answer(text: str) -> str | None:
 
 
 def load_gsm8k(num_samples: int):
-    ds = load_dataset("openai/gsm8k", "main", split="test")
+    """Load GSM8K's test split from the project-local dataset snapshot."""
+    dataset_dir = require_local_dataset(LOCAL_GSM8K_DIR, "GSM8K")
+    ds = load_dataset(str(dataset_dir), "main", split="test")
     ds = ds.shuffle(seed=42)
     if num_samples < len(ds):
         ds = ds.select(range(num_samples))
