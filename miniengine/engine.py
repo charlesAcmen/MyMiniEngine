@@ -275,6 +275,62 @@ class Engine:
             logits[:, -1, :], request.sampling_params, request.output_ids
         )
 
+    def batched_prefill(self, requests: list[Request]) -> list[int]:
+        """Preserve M1's per-request prefill behind the batch strategy API."""
+        token_ids: list[int] = []
+        for request in requests:
+            token_ids.append(self.prefill(request))
+            # self.validate_decode_admission(request)
+        return token_ids
+
+    @torch.inference_mode()
+    def paged_prefill(self, requests: list[Request]) -> list[int]:
+        """Run one packed, padding-free prefill batch through FlashAttention.
+
+        Page ownership is assigned before the forward pass, but ``kv_seq_len``
+        is committed only after all model layers have written K/V successfully.
+        Any failure returns every page acquired by this batch.
+        """
+        if not requests:
+            return []
+        if self.flash_attn_varlen_func is None or self.kv_pool is None:
+            raise RuntimeError("paged_prefill requires Engine(mode='paged')")
+        pool = self.kv_pool
+
+        try:
+            #allocate + build + forward + commit collectively constitute as a transaction
+            allocate_prefill_pages(requests, pool)
+            packed = build_packed_prefill(requests, pool)
+            logits = self.model.forward_paged_prefill(
+                packed.input_ids,
+                packed.position_ids,
+                pool.kv_caches,
+                packed.slot_mapping,
+                packed.cu_seqlens,
+                packed.max_seqlen,
+                self.flash_attn_varlen_func,
+            )
+            commit_prefill(requests)
+
+            # Each request samples from the final token in its packed segment.
+            #[0, 3, 8]->[2, 7]
+            last_token_indices = packed.cu_seqlens[1:].to(torch.long) - 1
+            # Select the final logits for each request.
+            final_logits = logits.index_select(0, last_token_indices)
+            return [
+                sample_token(
+                    #[index:index + 1] to reserve batch dim
+                    final_logits[index : index + 1],
+                    request.sampling_params,
+                    request.output_ids,
+                )
+                for index, request in enumerate(requests)
+            ]
+        except Exception:
+            for request in requests:
+                release_request_pages(request, pool)
+            raise
+
     @torch.inference_mode()
     def decode_step(self, request: Request) -> int:
         """
