@@ -230,12 +230,17 @@ class Scheduler:
                 )
             ]
 
-        # Prefill produces each request's first sampled token and compact KV cache.
         for req in admitted_requests:
             req.status = RequestStatus.RUNNING
-            token_id = self.engine.prefill(req)
+
+        # Engine bound this call to M1's preserved per-request prefill strategy.
+        token_ids = self.engine.prefill_batch(admitted_requests)
+        if len(token_ids) != len(admitted_requests):
+            raise RuntimeError(
+                "prefill_batch must return one token for every admitted request"
+            )
+        for req, token_id in zip(admitted_requests, token_ids):
             req.output_ids.append(token_id)
-            self.engine.validate_decode_admission(req)
             self._stream_token(req, token_id)
 
             if self._check_finished(req, token_id):
@@ -249,7 +254,7 @@ class Scheduler:
         # The engine builds only a temporary padded GPU KV workspace for this call.
         # It restores one compact KV cache per request before returning token_ids.
         active_requests = self.running
-        token_ids = self.engine.batched_decode(active_requests)
+        token_ids = self.engine.decode_batch(active_requests)
         if len(token_ids) != len(active_requests):
             raise RuntimeError(
                 "batched_decode must return one token for every running request"
