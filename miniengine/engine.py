@@ -267,7 +267,10 @@ class Engine:
         seq_len = input_ids.shape[1]
         position_ids = torch.arange(seq_len, device=self.device).unsqueeze(0)
 
-        logits, kv_caches = self.model(input_ids, position_ids, kv_caches=None)
+        # A 5-token prompt uses RoPE positions 0..4, so it needs 5 cached rows.
+        logits, kv_caches = self.model(
+            input_ids, position_ids, kv_caches=None, rope_cache_len=seq_len
+        )
         request.kv_cache = kv_caches
 
         # Sample from the last position
@@ -342,7 +345,13 @@ class Engine:
         cache_len = request.kv_cache[0][0].shape[2]  # layer 0, key tensor, seq dim
         position_ids = torch.tensor([[cache_len]], device=self.device)
 
-        logits, kv_caches = self.model(input_ids, position_ids, kv_caches=request.kv_cache)
+        # If 5 tokens are cached, decode uses position 5 and needs 6 RoPE rows.
+        logits, kv_caches = self.model(
+            input_ids,
+            position_ids,
+            kv_caches=request.kv_cache,
+            rope_cache_len=cache_len + 1,
+        )
         request.kv_cache = kv_caches
 
         return sample_token(
@@ -371,6 +380,9 @@ class Engine:
                 pool.kv_caches,
                 decode.cache_seqlens,
                 decode.block_table,
+                # A longest committed length of 5 decodes at position 5, so
+                # every request is covered by a 6-row RoPE cache.
+                max(request.kv_seq_len for request in requests) + 1,
                 self.flash_attn_with_kvcache,
             )
         except Exception:
@@ -505,11 +517,13 @@ class Engine:
             )
 
         #returned kv cache is still padded
+        # The longest 5-token cache decodes at position 5, requiring 6 rows.
         logits, returned_kv_caches = self.model(
             input_ids,
             position_ids,
             kv_caches=batched_kv_caches,
             attention_mask=attention_mask,
+            rope_cache_len=max_cache_len + 1,
         )
 
         for request_idx, (request, cache_len) in enumerate(

@@ -102,19 +102,23 @@ class RotaryEmbedding(nn.Module):
         self._cached_len: int = 0
 
     @torch.no_grad()
-    def forward(self, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        position_ids: torch.Tensor,
+        required_cache_len: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             position_ids: (batch, seq_len) integer positions.
+            required_cache_len: Minimum number of cached RoPE rows needed to
+                cover every position in ``position_ids``.
 
         Returns:
             cos, sin each of shape (batch, 1, seq_len, head_dim) —
             broadcastable over the head dimension.
         """
-        max_pos = int(position_ids.max().item()) + 1
-
-        if self._cos is None or max_pos > self._cached_len:
-            length = max(max_pos, self._cached_len * 2, 256)
+        if self._cos is None or required_cache_len > self._cached_len:
+            length = max(required_cache_len, self._cached_len * 2, 256)
             t = torch.arange(length, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
             freqs = torch.outer(t, self.inv_freq)  # (length, head_dim/2)
             # Duplicate each frequency block for split-half RoPE:
@@ -508,6 +512,7 @@ class TransformerModel(nn.Module):
         position_ids: torch.Tensor,
         kv_caches: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
         attention_mask: torch.Tensor | None = None,
+        rope_cache_len: int | None = None,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         """
         Args:
@@ -522,7 +527,7 @@ class TransformerModel(nn.Module):
             new_kv_caches:  list of per-layer (key, value) with appended tokens
         """
         hidden = self.embed_tokens(input_ids)
-        cos, sin = self.rotary_emb(position_ids)
+        cos, sin = self.rotary_emb(position_ids, rope_cache_len)
 
         new_kv_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
         for i, layer in enumerate(self.layers):
@@ -548,7 +553,9 @@ class TransformerModel(nn.Module):
         # RotaryEmbedding keeps its original batch-shaped API. A synthetic
         # batch dimension represents the one packed token stream; cu_seqlens
         # still prevents attention from crossing request boundaries.
-        cos, sin = self.rotary_emb(position_ids.unsqueeze(0))
+        # Prompts start at position zero, so max_seqlen is the RoPE cache bound:
+        # a longest prompt of 5 uses positions 0..4 and needs 5 cached rows.
+        cos, sin = self.rotary_emb(position_ids.unsqueeze(0), max_seqlen)
 
         for layer, (k_cache, v_cache) in zip(self.layers, kv_caches):
             hidden = layer.forward_paged_prefill(
@@ -571,11 +578,12 @@ class TransformerModel(nn.Module):
         kv_caches: Sequence[tuple[torch.Tensor, torch.Tensor]],
         cache_seqlens: torch.Tensor,
         block_table: torch.Tensor,
+        rope_cache_len: int,
         flash_attn_with_kvcache: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Run every layer while all historical K/V stays in the pool."""
         hidden = self.embed_tokens(input_ids)
-        cos, sin = self.rotary_emb(position_ids)
+        cos, sin = self.rotary_emb(position_ids, rope_cache_len)
         for layer, (k_cache, v_cache) in zip(self.layers, kv_caches):
             hidden = layer.forward_paged_decode(
                 hidden,
@@ -610,6 +618,7 @@ class CausalLM(nn.Module):
         position_ids: torch.Tensor,
         kv_caches: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
         attention_mask: torch.Tensor | None = None,
+        rope_cache_len: int | None = None,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
         """
         Returns:
@@ -617,7 +626,7 @@ class CausalLM(nn.Module):
             new_kv_caches: per-layer KV caches
         """
         hidden, new_kv_caches = self.model(
-            input_ids, position_ids, kv_caches, attention_mask
+            input_ids, position_ids, kv_caches, attention_mask, rope_cache_len
         )
         return self._project_logits(hidden), new_kv_caches
 
@@ -664,6 +673,7 @@ class CausalLM(nn.Module):
         kv_caches: Sequence[tuple[torch.Tensor, torch.Tensor]],
         cache_seqlens: torch.Tensor,
         block_table: torch.Tensor,
+        rope_cache_len: int,
         flash_attn_with_kvcache: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Return next-token logits after in-place paged KV append."""
@@ -673,6 +683,7 @@ class CausalLM(nn.Module):
             kv_caches,
             cache_seqlens,
             block_table,
+            rope_cache_len,
             flash_attn_with_kvcache,
         )
         return self._project_logits(hidden)
