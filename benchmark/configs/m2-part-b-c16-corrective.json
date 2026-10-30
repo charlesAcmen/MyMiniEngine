@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "name": "partb-c16-corrective",
+  "model": "models/Qwen3-0.6B",
+  "output_root": "outputs",
+  "common": {
+    "device": "cuda",
+    "dtype": "bfloat16",
+    "page_size": 256,
+    "mem_fraction_static": 0.67,
+    "seed": 42,
+    "warmup": {
+      "input_len": 128,
+      "output_len": 8,
+      "num_requests": 4,
+      "concurrency": 4
+    },
+    "safety": {
+      "max_fb_mib": 11520,
+      "warning_temperature_c": 83,
+      "max_temperature_c": 88,
+      "emergency_temperature_c": 90,
+      "temperature_consecutive_samples": 2,
+      "max_start_temperature_c": 55,
+      "max_idle_fb_mib": 2048,
+      "idle_wait_seconds": 1800,
+      "trial_timeout_seconds": 3600
+    }
+  },
+  "conditions": [
+    {
+      "id": "standard-c16-batched",
+      "group": "acceptance",
+      "modes": ["batched"],
+      "input_len": 512,
+      "output_len": 256,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 16,
+      "max_running": 16,
+      "num_requests": 50,
+      "repeats": 3
+    }
+  ]
+}

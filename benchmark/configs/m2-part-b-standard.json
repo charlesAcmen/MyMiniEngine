@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "name": "partb-standard",
+  "model": "models/Qwen3-0.6B",
+  "output_root": "outputs",
+  "common": {
+    "device": "cuda",
+    "dtype": "bfloat16",
+    "page_size": 256,
+    "mem_fraction_static": 0.67,
+    "seed": 42,
+    "warmup": {
+      "input_len": 128,
+      "output_len": 8,
+      "num_requests": 4,
+      "concurrency": 4
+    },
+    "safety": {
+      "max_fb_mib": 11520,
+      "max_temperature_c": 83,
+      "max_idle_fb_mib": 2048,
+      "idle_wait_seconds": 120,
+      "trial_timeout_seconds": 3600
+    }
+  },
+  "conditions": [
+    {
+      "id": "standard-c1",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 512,
+      "output_len": 256,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 1,
+      "max_running": 1,
+      "num_requests": 50,
+      "repeats": 3
+    },
+    {
+      "id": "standard-c4",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 512,
+      "output_len": 256,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 4,
+      "max_running": 4,
+      "num_requests": 50,
+      "repeats": 3
+    },
+    {
+      "id": "standard-c8",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 512,
+      "output_len": 256,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 8,
+      "max_running": 8,
+      "num_requests": 50,
+      "repeats": 3
+    },
+    {
+      "id": "standard-c16",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 512,
+      "output_len": 256,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 16,
+      "max_running": 16,
+      "num_requests": 50,
+      "repeats": 3
+    },
+    {
+      "id": "mmlu-200",
+      "group": "accuracy",
+      "kind": "accuracy",
+      "modes": ["batched", "paged"],
+      "dataset": "mmlu",
+      "num_samples": 200,
+      "max_tokens": 32,
+      "concurrency": 8,
+      "max_running": 8,
+      "repeats": 1
+    },
+    {
+      "id": "gsm8k-100",
+      "group": "accuracy",
+      "kind": "accuracy",
+      "modes": ["batched", "paged"],
+      "dataset": "gsm8k",
+      "num_samples": 100,
+      "max_tokens": 512,
+      "concurrency": 8,
+      "max_running": 8,
+      "repeats": 1,
+      "timeout_seconds": 3600
+    }
+  ]
+}

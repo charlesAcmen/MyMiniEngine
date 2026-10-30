@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "name": "partb-compact",
+  "model": "models/Qwen3-0.6B",
+  "output_root": "outputs",
+  "common": {
+    "device": "cuda",
+    "dtype": "bfloat16",
+    "page_size": 256,
+    "mem_fraction_static": 0.68,
+    "seed": 42,
+    "warmup": {
+      "input_len": 128,
+      "output_len": 8,
+      "num_requests": 4,
+      "concurrency": 4
+    },
+    "safety": {
+      "max_fb_mib": 11520,
+      "max_temperature_c": 83,
+      "max_idle_fb_mib": 2048,
+      "idle_wait_seconds": 120,
+      "trial_timeout_seconds": 1800
+    }
+  },
+  "conditions": [
+    {
+      "id": "scale-c8",
+      "group": "pilot",
+      "modes": ["batched", "paged"],
+      "input_len": 512,
+      "output_len": 128,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 8,
+      "max_running": 8,
+      "num_requests": 16,
+      "repeats": 1
+    },
+    {
+      "id": "scale-c16",
+      "group": "pilot",
+      "modes": ["batched", "paged"],
+      "input_len": 512,
+      "output_len": 128,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 16,
+      "max_running": 16,
+      "num_requests": 16,
+      "repeats": 1
+    },
+    {
+      "id": "balanced",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 512,
+      "output_len": 256,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 16,
+      "max_running": 16,
+      "num_requests": 16,
+      "repeats": 2
+    },
+    {
+      "id": "long-2k",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 2048,
+      "output_len": 128,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 12,
+      "max_running": 12,
+      "num_requests": 12,
+      "repeats": 1
+    },
+    {
+      "id": "long-4k",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 4096,
+      "output_len": 64,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 8,
+      "max_running": 8,
+      "num_requests": 8,
+      "repeats": 1
+    },
+    {
+      "id": "ragged",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 512,
+      "output_len": 256,
+      "input_len_min_ratio": 0.5,
+      "concurrency": 16,
+      "max_running": 16,
+      "num_requests": 16,
+      "repeats": 1
+    },
+    {
+      "id": "prefill-heavy",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 2048,
+      "output_len": 32,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 12,
+      "max_running": 12,
+      "num_requests": 12,
+      "repeats": 1
+    },
+    {
+      "id": "decode-heavy",
+      "group": "acceptance",
+      "modes": ["batched", "paged"],
+      "input_len": 256,
+      "output_len": 512,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 16,
+      "max_running": 16,
+      "num_requests": 16,
+      "repeats": 1
+    },
+    {
+      "id": "overload-c32",
+      "group": "overload",
+      "modes": ["paged"],
+      "input_len": 512,
+      "output_len": 128,
+      "input_len_min_ratio": 1.0,
+      "concurrency": 32,
+      "max_running": 16,
+      "num_requests": 32,
+      "repeats": 1
+    },
+    {
+      "id": "mmlu-50",
+      "group": "accuracy",
+      "kind": "accuracy",
+      "modes": ["batched", "paged"],
+      "dataset": "mmlu",
+      "num_samples": 50,
+      "max_tokens": 32,
+      "concurrency": 8,
+      "max_running": 8,
+      "repeats": 1
+    }
+  ]
+}
