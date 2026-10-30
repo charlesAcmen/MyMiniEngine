@@ -40,7 +40,7 @@ from miniengine.paged_attention import (
     release_request_pages,
     require_flash_attention,
 )
-from miniengine.sampler import sample_token
+from miniengine.sampler import sample_batch, sample_token
 
 logger = logging.getLogger(__name__)
 
@@ -312,20 +312,13 @@ class Engine:
             )
             commit_prefill(requests)
 
-            # Each request samples from the final token in its packed segment.
-            #[0, 3, 8]->[2, 7]
-            last_token_indices = packed.cu_seqlens[1:].to(torch.long) - 1
-            # Select the final logits for each request.
-            final_logits = logits.index_select(0, last_token_indices)
-            return [
-                sample_token(
-                    #[index:index + 1] to reserve batch dim
-                    final_logits[index : index + 1],
-                    request.sampling_params,
-                    request.output_ids,
-                )
-                for index, request in enumerate(requests)
-            ]
+            # The model already selected each packed segment's final hidden
+            # state before the vocabulary projection, so logits is (B, V).
+            return sample_batch(
+                logits,
+                [request.sampling_params for request in requests],
+                [request.output_ids for request in requests],
+            )
         except Exception:
             for request in requests:
                 release_request_pages(request, pool)
@@ -391,14 +384,11 @@ class Engine:
             raise
         #transaction
         commit_decode_batch(requests)
-        return [
-            sample_token(
-                logits[index : index + 1, -1, :],
-                request.sampling_params,
-                request.output_ids,
-            )
-            for index, request in enumerate(requests)
-        ]
+        return sample_batch(
+            logits[:, -1, :],
+            [request.sampling_params for request in requests],
+            [request.output_ids for request in requests],
+        )
 
     @staticmethod
     def _release_batched_request(request: Request) -> None:
@@ -554,15 +544,11 @@ class Engine:
                 compact_kv.append((key, value))
             request.kv_cache = compact_kv
 
-        return [
-            sample_token(
-                #reserve batch dim,ith request
-                logits[i:i + 1, -1, :],
-                request.sampling_params,
-                request.output_ids,
-            )
-            for i, request in enumerate(requests)
-        ]
+        return sample_batch(
+            logits[:, -1, :],
+            [request.sampling_params for request in requests],
+            [request.output_ids for request in requests],
+        )
 
     def is_stop_token(self, token_id: int) -> bool:
         return token_id in self.stop_token_ids

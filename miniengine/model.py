@@ -637,7 +637,7 @@ class CausalLM(nn.Module):
         max_seqlen: int,
         flash_attn_varlen_func: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
-        """Return packed logits while writing every layer's K/V into the pool."""
+        """Write every prompt K/V but project only each request's final token."""
         hidden = self.model.forward_paged_prefill(
             input_ids,
             position_ids,
@@ -647,7 +647,15 @@ class CausalLM(nn.Module):
             max_seqlen,
             flash_attn_varlen_func,
         )
-        return self._project_logits(hidden)
+        # Each request samples from the final token in its packed segment.
+        #[0, 3, 8]->[2, 7]
+        # Select the final logits for each request.
+        # Every prompt hidden state is required to build K/V, but serving only
+        # samples after the final token of each packed request. Select before
+        # the large vocabulary projection to avoid materializing unused logits.
+        last_token_indices = cu_seqlens[1:].to(torch.long) - 1
+        final_hidden = hidden.index_select(0, last_token_indices)
+        return self._project_logits(final_hidden)
 
     def forward_paged_decode(
         self,

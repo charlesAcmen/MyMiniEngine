@@ -1,10 +1,6 @@
-"""
-Token sampling utilities.
+"""Token sampling utilities."""
 
-Supports greedy, temperature scaling, top-k, top-p (nucleus), and
-repetition penalty.  All functions operate on a (batch=1, vocab) logits
-tensor on GPU and return a single Python int token id.
-"""
+from collections.abc import Sequence
 
 import torch
 from miniengine.core import SamplingParams
@@ -74,3 +70,32 @@ def sample_token(
 
     probs = torch.softmax(logits, dim=-1)
     return torch.multinomial(probs, num_samples=1).item()
+
+
+def sample_batch(
+    logits: torch.Tensor,
+    params: Sequence[SamplingParams],
+    output_ids: Sequence[list[int]],
+) -> list[int]:
+    """Choose one token per row while preserving per-request sampling rules.
+
+    Pure greedy requests share one GPU argmax and one device-to-host transfer.
+    A heterogeneous batch falls back to the existing single-request sampler so
+    temperature, top-k/top-p, and repetition penalties keep their semantics.
+    """
+
+    pure_greedy = all(
+        item.temperature == 0
+        and (item.repetition_penalty == 1.0 or not history)
+        for item, history in zip(params, output_ids)
+    )
+    if pure_greedy:
+        # tolist() is the single required synchronization that hands the next
+        # token ids to the CPU scheduler; avoid one .item() per request.
+        return logits.argmax(dim=-1).tolist()
+
+    return [
+        #reserve batch dim,ith request
+        sample_token(logits[index : index + 1], item, history)
+        for index, (item, history) in enumerate(zip(params, output_ids))
+    ]
