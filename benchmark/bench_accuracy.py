@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import aiohttp
 from datasets import load_dataset
 
-from benchmark.result_io import (
+from benchmark.result_artifacts import (
     announce_result,
     validate_result_filename,
     write_benchmark_result,

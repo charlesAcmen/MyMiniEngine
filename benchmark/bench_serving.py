@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import aiohttp
 import numpy as np
 
-from benchmark.result_io import (
+from benchmark.result_artifacts import (
     announce_result,
     validate_result_filename,
     write_benchmark_result,
