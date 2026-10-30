@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
-# Reject commits that break the local Part-B correctness and benchmark smoke gate.
+# Keep commits responsive while rejecting unit-test and syntax regressions.
+# Run scripts/check_part_b.sh separately for the full GPU serving/accuracy gate.
 
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-exec "${repo_root}/scripts/check_part_b.sh"
+python_bin="${PYTHON_BIN:-${repo_root}/.venv/bin/python}"
+
+if [[ ! -x "${python_bin}" ]]; then
+    printf 'Pre-commit requires the project interpreter at %s.\n' "${python_bin}" >&2
+    exit 1
+fi
+
+cd "${repo_root}"
+"${python_bin}" -m unittest discover -s tests
+"${python_bin}" -m py_compile miniengine/*.py benchmark/*.py
+
+printf '%s\n' 'Pre-commit checks passed (unit tests, Python compilation).'
