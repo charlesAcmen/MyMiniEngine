@@ -159,3 +159,59 @@ large sampling uncertainty of this 100-question subset, but the paths are not
 token-for-token identical; future compile/graph comparisons must use the same
 fixed samples and retain per-question outputs rather than claiming exact
 parity.
+
+## P0 hot-path follow-up — 2026-10-30
+
+Three execution-only optimizations were applied without changing model weights,
+attention math, sampling parameters, or request scheduling:
+
+1. packed prefill selects the final hidden state of each request before the
+   vocabulary projection, instead of projecting every prompt token and then
+   discarding non-final logits;
+2. a homogeneous greedy batch uses one batched `argmax` and one `.tolist()`
+   transfer, while heterogeneous or penalized sampling retains the original
+   per-request fallback;
+3. the engine passes its CPU-known sequence bound to the RoPE cache, avoiding
+   `position_ids.max().item()` in each serving forward.
+
+The README-standard c16 condition was repeated three times per mode using the
+same 512/256 lengths, 50 requests, seed 42, BF16, and paged configuration
+(`page_size=256`, `mem_fraction_static=0.67`). Trials used fresh servers and an
+alternating batched/paged order. The idle GPU stabilized at 58 C, so the trial
+start threshold was relaxed from 55 C to 60 C; the 90 C emergency stop remained
+active. All six trials completed without request failures or safety stops. Raw
+JSON, client/server logs, and one-second telemetry are under
+`outputs/2026-10-30-partb-p0/`.
+
+| Mode | Before Gen tok/s | After Gen tok/s | After TTFT p50 | After TPOT p50 | After completion p50 | After peak FB |
+|---|---:|---:|---:|---:|---:|---:|
+| batched | 165.8 ± 3.7 | 151.1 ± 2.0 | 855.6 ± 34.2 ms | 97.3 ± 1.3 ms | 25,743.7 ± 210.0 ms | 10,912 MiB mean |
+| paged | 413.3 ± 70.8 | 383.5 ± 26.7 | 587.1 ± 34.1 ms | 30.9 ± 2.7 ms | 8,675.7 ± 811.3 ms | 9,871 MiB mean |
+
+The paired paged-over-batched speedups were 2.41x, 2.70x, and 2.51x (2.54x
+mean), essentially unchanged from the earlier 2.49x mean. Absolute throughput
+was 8.9% lower for batched and 7.2% lower for paged than the earlier collection.
+Because both modes moved down together and the earlier paged result had a large
+70.8 tok/s trial standard deviation, this run does **not** establish a
+significant throughput improvement from the three changes. It would be
+incorrect to report the small 2.49x-to-2.54x ratio change as an optimization
+speedup.
+
+The clear measured gain is paged-prefill memory headroom. Mean paged peak FB
+fell from 11,297 MiB to 9,871 MiB, a reduction of about 1,426 MiB (12.6%) under
+the same static fraction. Selecting `B` final hidden rows before the large
+hidden-to-vocabulary matrix multiplication avoids materializing logits for all
+`B * prompt_length` packed tokens. For c16 and 512-token prompts, that changes
+the projection output from up to 8,192 vocabulary rows to 16 rows. The measured
+reduction is smaller than the raw tensor-size upper bound because allocator
+reuse, request arrival timing, and other live tensors determine the sampled FB
+peak.
+
+The batched greedy and RoPE changes remove host synchronization and Python
+launch overhead during decode, but their standalone contribution is below the
+noise floor of this end-to-end run. Decode still performs the full transformer
+forward, FlashAttention call, scheduler work, and one required batched token
+transfer per step. A causal percentage for either optimization requires an
+ablation benchmark with each change independently toggled; this combined run
+only verifies their combined behavior and preserves the previously observed
+paged-over-batched advantage.
