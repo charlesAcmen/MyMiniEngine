@@ -50,7 +50,12 @@ curl http://localhost:8000/v1/chat/completions \
 
 Two benchmarks are provided. Both send requests to a **running** MiniEngine server.
 ```bash
-python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16 --page-size 256
+# Preserved Milestone 1 baseline (dynamic contiguous KV).
+python -m miniengine --model models/Qwen3-0.6B --mode batched --dtype bfloat16
+
+# Milestone 2 Part B (pre-allocated paged KV + packed prefill).
+python -m miniengine --model models/Qwen3-0.6B --mode paged \
+  --dtype bfloat16 --page-size 256
 ```
 
 `--page-size` is the number of **tokens** stored by one physical KV-cache
