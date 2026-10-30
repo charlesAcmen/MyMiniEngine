@@ -28,7 +28,8 @@ import random
 import sys
 import time
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -36,6 +37,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import aiohttp
 import numpy as np
 
+from benchmark.result_io import (
+    announce_result,
+    validate_result_filename,
+    write_benchmark_result,
+)
 from miniengine.cli import positive_int, positive_int_csv, unit_interval
 
 
@@ -235,7 +241,8 @@ def prepare_requests(
 
     print(
         f"  Consumed {consumed_prompts} WildChat prompts while assembling "
-        f"{num_requests} fixed-length requests",
+        f"{num_requests} "
+        f"{'fixed-output' if output_len is not None else 'natural-output'} requests",
         flush=True,
     )
     return requests
@@ -341,11 +348,101 @@ async def run_at_concurrency(
 
 
 def pct(arr, p):
-    return np.percentile(arr, p) * 1000 if len(arr) > 0 else float("nan")
+    return float(np.percentile(arr, p) * 1000) if len(arr) > 0 else float("nan")
 
 
 def mean_ms(arr):
-    return np.mean(arr) * 1000 if len(arr) > 0 else float("nan")
+    return float(np.mean(arr) * 1000) if len(arr) > 0 else float("nan")
+
+
+def summarize_concurrency(results: list[RequestMetrics]) -> dict:
+    """Build the machine-readable equivalent of one terminal summary row."""
+    ok = [result for result in results if result.error is None]
+    ttfts = np.array([result.ttft for result in ok if result.ttft is not None])
+    completions = np.array(
+        [
+            result.completion_latency
+            for result in ok
+            if result.completion_latency is not None
+        ]
+    )
+    tpots = np.array([result.tpot for result in ok if result.tpot is not None])
+    total_out = sum(result.num_output_tokens for result in ok)
+    if ok:
+        total_time = max(result.end_time for result in ok) - min(
+            result.start_time for result in ok
+        )
+    else:
+        total_time = 0.0
+    error_counts: dict[str, int] = {}
+    for result in results:
+        if result.error is not None:
+            error_counts[result.error] = error_counts.get(result.error, 0) + 1
+    return {
+        "requests": len(results),
+        "successes": len(ok),
+        "errors": error_counts,
+        "total_output_tokens": total_out,
+        "wall_time_seconds": total_time,
+        "generation_tokens_per_second": total_out / total_time
+        if total_time > 0
+        else 0.0,
+        "ttft_ms": {"p50": pct(ttfts, 50), "p99": pct(ttfts, 99)},
+        "completion_ms": {
+            "p50": pct(completions, 50),
+            "p99": pct(completions, 99),
+        },
+        "tpot_ms": {"p50": pct(tpots, 50), "p99": pct(tpots, 99)},
+    }
+
+
+def serialize_request(result: RequestMetrics) -> dict:
+    """Store durations and counters; raw perf-counter epochs are not portable."""
+    payload = asdict(result)
+    payload.pop("start_time", None)
+    payload.pop("first_token_time", None)
+    payload.pop("end_time", None)
+    payload.update(
+        {
+            "ttft_seconds": result.ttft,
+            "completion_seconds": result.completion_latency,
+            "tpot_seconds": result.tpot,
+        }
+    )
+    return payload
+
+
+def build_json_report(args, all_results: dict[int, list[RequestMetrics]]) -> dict:
+    """Serialize one benchmark invocation without changing terminal reporting."""
+    return {
+        "schema_version": 1,
+        "benchmark": "serving",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "parameters": result_parameters(args),
+        "results": {
+            str(concurrency): {
+                "summary": summarize_concurrency(results),
+                "requests": [serialize_request(result) for result in results],
+            }
+            for concurrency, results in all_results.items()
+        },
+    }
+
+
+def result_parameters(args) -> dict:
+    """Return the parameters recorded in and used to name a serving result."""
+    return {
+        "base_url": args.base_url,
+        "model": args.model,
+        "num_requests": args.num_requests,
+        "input_len": args.input_len,
+        "output_len": args.output_len,
+        "max_tokens": args.max_tokens if args.output_len is None else None,
+        "input_len_min_ratio": args.input_len_min_ratio,
+        "concurrencies": args.concurrencies,
+        "prompt_data_dir": str(args.prompt_data_dir),
+        "seed": args.seed,
+    }
 
 
 def print_single_result(conc, ok, total_time, ttfts, completions, tpots, total_out):
@@ -423,6 +520,7 @@ async def async_main(args, requests_pool, concurrencies):
         print_single_result(conc, len(ok), total_time, ttfts, completions, tpots, total_out)
 
     print_summary_table(all_results)
+    return all_results
 
 
 def main():
@@ -456,6 +554,10 @@ def main():
     )
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
+    try:
+        validate_result_filename("serving", result_parameters(args))
+    except ValueError as exc:
+        p.error(str(exc))
 
     concurrencies = args.concurrencies
     random.seed(args.seed)
@@ -471,6 +573,7 @@ def main():
         except Exception:
             print("  ERROR: Could not detect model from server. Use --model to specify.", flush=True)
             sys.exit(1)
+    args.model = model_id
 
     print(f"\n{'=' * 60}")
     print(f"  Serving Benchmark")
@@ -482,7 +585,8 @@ def main():
         print(f"  Output mode  : fixed ({args.output_len} sampled tokens; ignore_eos=true)")
     else:
         print(f"  Output mode  : natural (max_tokens={args.max_tokens}; EOS enabled)")
-    print(f"  Input min    : {args.input_len_min_ratio:.2f} x target")
+    configured_min_input_len = int(args.input_len * args.input_len_min_ratio)
+    print(f"  Input min    : {configured_min_input_len} tokens")
     print(f"  Concurrencies: {concurrencies}")
     print(f"  Prompt data  : {args.prompt_data_dir}")
     print(f"{'=' * 60}")
@@ -514,7 +618,9 @@ def main():
     )
     del tokenizer
 
-    asyncio.run(async_main(args, requests_pool, concurrencies))
+    all_results = asyncio.run(async_main(args, requests_pool, concurrencies))
+    result_path = write_benchmark_result(build_json_report(args, all_results))
+    announce_result(result_path)
 
 
 if __name__ == "__main__":

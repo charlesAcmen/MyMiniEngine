@@ -21,7 +21,8 @@ import json
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -29,6 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import aiohttp
 from datasets import load_dataset
 
+from benchmark.result_io import (
+    announce_result,
+    validate_result_filename,
+    write_benchmark_result,
+)
 from miniengine.cli import positive_int
 
 
@@ -289,6 +295,43 @@ def print_report(results: list[EvalResult], dataset: str):
             print(f"    Gold={r.gold}  Pred={r.predicted}  Output: {r.model_output[:80]}...")
 
 
+def build_json_report(args, results: list[EvalResult]) -> dict:
+    """Serialize the fixed evaluation set and its aggregate accuracy."""
+    successful = [result for result in results if result.error is None]
+    correct = sum(result.correct for result in successful)
+    return {
+        "schema_version": 1,
+        "benchmark": "accuracy",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "parameters": result_parameters(args),
+        "summary": {
+            "samples": len(results),
+            "successes": len(successful),
+            "correct": correct,
+            "accuracy": correct / len(successful) if successful else 0.0,
+            "average_latency_seconds": (
+                sum(result.latency for result in successful) / len(successful)
+                if successful
+                else 0.0
+            ),
+        },
+        "results": [asdict(result) for result in results],
+    }
+
+
+def result_parameters(args) -> dict:
+    """Return the parameters recorded in and used to name an accuracy result."""
+    return {
+        "dataset": args.dataset,
+        "num_samples": args.num_samples,
+        "max_tokens": args.max_tokens,
+        "concurrency": args.concurrency,
+        "base_url": args.base_url,
+        "model": getattr(args, "model", None),
+        "subjects": args.subjects,
+    }
+
+
 # ── Main ────────────────────────────────────────────────────────────────
 
 
@@ -310,6 +353,19 @@ def main():
 
     if args.max_tokens is None:
         args.max_tokens = 32 if args.dataset == "mmlu" else 512
+    try:
+        validate_result_filename("accuracy", result_parameters(args))
+    except ValueError as exc:
+        p.error(str(exc))
+
+    import requests as req_lib
+    try:
+        response = req_lib.get(f"{args.base_url}/v1/models", timeout=5)
+        response.raise_for_status()
+        args.model = response.json()["data"][0]["id"]
+    except Exception:
+        print("  ERROR: Could not detect model from server.", flush=True)
+        sys.exit(1)
 
     print(f"\n{'=' * 60}")
     print(f"  Accuracy Benchmark")
@@ -318,6 +374,7 @@ def main():
     print(f"  Max tokens  : {args.max_tokens}")
     print(f"  Concurrency : {args.concurrency}")
     print(f"  Server      : {args.base_url}")
+    print(f"  Model       : {args.model}")
     print(f"{'=' * 60}\n")
 
     # Load dataset
@@ -342,6 +399,8 @@ def main():
     )
 
     print_report(results, args.dataset)
+    result_path = write_benchmark_result(build_json_report(args, results))
+    announce_result(result_path)
 
 
 if __name__ == "__main__":

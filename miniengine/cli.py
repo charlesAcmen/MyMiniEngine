@@ -49,4 +49,6 @@ def positive_int_csv(raw: str) -> list[int]:
         ) from exc
     if not values:
         raise argparse.ArgumentTypeError("must contain at least one integer")
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError("must not contain duplicate integers")
     return values
