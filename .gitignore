@@ -62,3 +62,6 @@ Thumbs.db
 # Locally downloaded benchmark datasets
 data/
 models/
+
+# Local benchmark artifacts (selected aggregates belong in docs/)
+outputs/
