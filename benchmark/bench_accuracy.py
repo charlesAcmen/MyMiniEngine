@@ -189,6 +189,7 @@ async def send_eval_request(
     async with session.post(
         f"{base_url}/v1/chat/completions", json=payload,
     ) as resp:
+        resp.raise_for_status()
         data = await resp.json()
     latency = time.perf_counter() - t0
 
@@ -220,13 +221,9 @@ async def run_eval(
             except asyncio.QueueEmpty:
                 return
 
-            try:
-                text, latency = await send_eval_request(
-                    session, base_url, sample["prompt"], max_tokens,
-                )
-            except Exception as e:
-                text = f"ERROR: {e}"
-                latency = 0.0
+            text, latency = await send_eval_request(
+                session, base_url, sample["prompt"], max_tokens,
+            )
 
             # Score
             if dataset == "mmlu":
@@ -297,8 +294,7 @@ def print_report(results: list[EvalResult], dataset: str):
 
 def build_json_report(args, results: list[EvalResult]) -> dict:
     """Serialize the fixed evaluation set and its aggregate accuracy."""
-    successful = [result for result in results if result.error is None]
-    correct = sum(result.correct for result in successful)
+    correct = sum(result.correct for result in results)
     return {
         "schema_version": 1,
         "benchmark": "accuracy",
@@ -306,12 +302,12 @@ def build_json_report(args, results: list[EvalResult]) -> dict:
         "parameters": result_parameters(args),
         "summary": {
             "samples": len(results),
-            "successes": len(successful),
+            "successes": len(results),
             "correct": correct,
-            "accuracy": correct / len(successful) if successful else 0.0,
+            "accuracy": correct / len(results) if results else 0.0,
             "average_latency_seconds": (
-                sum(result.latency for result in successful) / len(successful)
-                if successful
+                sum(result.latency for result in results) / len(results)
+                if results
                 else 0.0
             ),
         },
