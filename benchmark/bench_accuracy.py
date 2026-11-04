@@ -35,6 +35,7 @@ from benchmark.result_artifacts import (
     validate_result_filename,
     write_benchmark_result,
 )
+from benchmark.server_metadata import fetch_server_model_metadata
 from miniengine.cli import positive_int
 
 
@@ -351,18 +352,17 @@ def main():
     if args.max_tokens is None:
         args.max_tokens = 32 if args.dataset == "mmlu" else 512
     try:
+        server_model = fetch_server_model_metadata(args.base_url)
+        args.model = server_model["id"]
+        args.sampling_config = server_model.get("sampling_config")
+    except (KeyError, RuntimeError):
+        print("  ERROR: Could not detect model from server.", flush=True)
+        sys.exit(1)
+
+    try:
         validate_result_filename("accuracy", result_parameters(args))
     except ValueError as exc:
         p.error(str(exc))
-
-    import requests as req_lib
-    try:
-        response = req_lib.get(f"{args.base_url}/v1/models", timeout=5)
-        response.raise_for_status()
-        args.model = response.json()["data"][0]["id"]
-    except Exception:
-        print("  ERROR: Could not detect model from server.", flush=True)
-        sys.exit(1)
 
     print(f"\n{'=' * 60}")
     print(f"  Accuracy Benchmark")

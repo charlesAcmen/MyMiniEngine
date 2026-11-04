@@ -42,6 +42,7 @@ from benchmark.result_artifacts import (
     validate_result_filename,
     write_benchmark_result,
 )
+from benchmark.server_metadata import fetch_server_model_metadata
 from miniengine.cli import positive_int, positive_int_csv, unit_interval
 
 
@@ -544,8 +545,12 @@ def main():
         "--input-len-min-ratio", type=unit_interval, default=1.0,
         help="Shortest input / --input-len: 1.0=fixed; 0.5=random [50%%,100%%]; 0.0=random [template overhead,100%%]",
     )
-    p.add_argument("--concurrencies", type=positive_int_csv, default="1,2,4,8,16,32",
-                   help="Comma-separated concurrency levels to sweep")
+    p.add_argument(
+        "--concurrencies",
+        type=positive_int_csv,
+        default="1,2,4,8,16,32",
+        help="Comma-separated concurrency levels to sweep",
+    )
     p.add_argument(
         "--prompt-data-dir",
         type=Path,
@@ -554,26 +559,34 @@ def main():
     )
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
+    concurrencies = args.concurrencies
+    random.seed(args.seed)
+
+    # Read server-owned metadata even when the tokenizer path is supplied locally.
+    try:
+        server_model = fetch_server_model_metadata(args.base_url)
+    except RuntimeError:
+        if args.model is None:
+            print(
+                "  ERROR: Could not read server metadata. Use --model to specify "
+                "the tokenizer path.",
+                flush=True,
+            )
+            sys.exit(1)
+        server_model = {}
+
+    model_id = args.model or server_model.get("id")
+    if model_id is None:
+        print("  ERROR: Could not determine the model tokenizer path.", flush=True)
+        sys.exit(1)
+
+    args.model = model_id
+    args.sampling_config = server_model.get("sampling_config")
+
     try:
         validate_result_filename("serving", result_parameters(args))
     except ValueError as exc:
         p.error(str(exc))
-
-    concurrencies = args.concurrencies
-    random.seed(args.seed)
-
-    # Auto-detect model from server
-    model_id = args.model
-    if model_id is None:
-        import requests as req_lib
-        try:
-            resp = req_lib.get(f"{args.base_url}/v1/models", timeout=5)
-            model_id = resp.json()["data"][0]["id"]
-            print(f"  Auto-detected model: {model_id}", flush=True)
-        except Exception:
-            print("  ERROR: Could not detect model from server. Use --model to specify.", flush=True)
-            sys.exit(1)
-    args.model = model_id
 
     print(f"\n{'=' * 60}")
     print(f"  Serving Benchmark")
