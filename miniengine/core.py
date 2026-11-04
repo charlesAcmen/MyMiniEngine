@@ -52,7 +52,9 @@ class Request:
     request_id: str
     input_ids: list[int] = field(default_factory=list)
     output_ids: list[int] = field(default_factory=list)
-    sampling_params: SamplingParams = field(default_factory=SamplingParams)
+    max_new_tokens: int = 256
+    # Benchmark-only: continue to the length limit even after an EOS token.
+    ignore_eos: bool = False
     status: RequestStatus = RequestStatus.WAITING
     arrival_time: float = field(default_factory=time.time)
 
@@ -80,7 +82,7 @@ class Request:
 
     @property
     def is_finished(self) -> bool:
-        return self.num_output_tokens >= self.sampling_params.max_new_tokens
+        return self.num_output_tokens >= self.max_new_tokens
 
 
 @dataclass

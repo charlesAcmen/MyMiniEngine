@@ -49,11 +49,12 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = ""
     messages: list[ChatMessage]
-    max_tokens: int | None = Field(default=256)
-    temperature: float | None = Field(default=0.6)
-    top_p: float | None = Field(default=0.95)
-    top_k: int | None = Field(default=20)
-    repetition_penalty: float | None = Field(default=1.0)
+    #ge: greater than or equal to, gt: greater than, le: less than or equal to
+    max_tokens: int | None = Field(default=256, ge=1)
+    temperature: float | None = Field(default=None, ge=0)
+    top_p: float | None = Field(default=None, gt=0, le=1)
+    top_k: int | None = Field(default=None, ge=0)
+    repetition_penalty: float | None = Field(default=None, gt=0)
     # Kept false for normal chat.  The serving benchmark enables it to make
     # every request execute an exactly controlled number of decode steps.
     ignore_eos: bool = False
@@ -90,21 +91,11 @@ async def chat_completions(raw: ChatCompletionRequest):
     messages = [{"role": m.role, "content": m.content} for m in raw.messages]
     input_ids = engine.tokenize_messages(messages)
 
-    sampling_params = SamplingParams(
-        max_new_tokens=raw.max_tokens if raw.max_tokens is not None else 256,
-        temperature=raw.temperature if raw.temperature is not None else 0.6,
-        top_p=raw.top_p if raw.top_p is not None else 0.95,
-        top_k=raw.top_k if raw.top_k is not None else 20,
-        repetition_penalty=(
-            raw.repetition_penalty if raw.repetition_penalty is not None else 1.0
-        ),
-        ignore_eos=raw.ignore_eos,
-    )
-
     req = Request(
         request_id=str(uuid.uuid4()),
         input_ids=input_ids,
-        sampling_params=sampling_params,
+        max_new_tokens=raw.max_tokens if raw.max_tokens is not None else 256,
+        ignore_eos=raw.ignore_eos,
     )
     scheduler.add_request(req)
 
