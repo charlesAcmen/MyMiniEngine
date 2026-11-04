@@ -7,32 +7,145 @@ from unittest.mock import patch
 
 import torch
 
-from miniengine.core import SamplingParams
+from miniengine.core import SamplingConfig
 from miniengine.model import CausalLM, ModelConfig, RotaryEmbedding
-from miniengine.sampler import sample_batch, sample_token
+from miniengine.sampler import (
+    apply_repetition_penalty_batch,
+    sample_batch,
+    sample_token,
+)
 
 
 class BatchSamplingTests(unittest.TestCase):
     def test_pure_greedy_batch_uses_one_tensor_to_list(self) -> None:
         logits = torch.tensor([[1.0, 4.0, 2.0], [8.0, 3.0, 5.0]])
-        params = [SamplingParams(temperature=0), SamplingParams(temperature=0)]
+        config = SamplingConfig(temperature=0)
 
-        self.assertEqual(sample_batch(logits, params, [[], [1]]), [1, 0])
+        self.assertEqual(sample_batch(logits, config, [[], [1]]), [1, 0])
 
-    def test_repetition_penalty_keeps_per_request_fallback(self) -> None:
+    def test_ragged_repetition_penalty_keeps_rows_independent(self) -> None:
         logits = torch.tensor([[1.0, 4.0, 2.0], [8.0, 3.0, 5.0]])
-        params = [
-            SamplingParams(temperature=0),
-            SamplingParams(temperature=0, repetition_penalty=2.0),
-        ]
+        original = logits.clone()
 
-        with patch(
-            "miniengine.sampler.sample_token", wraps=sample_token
-        ) as single_sampler:
-            tokens = sample_batch(logits, params, [[], [0]])
+        adjusted = apply_repetition_penalty_batch(
+            logits, [[1, 1], [0, 2]], penalty=2.0
+        )
 
-        self.assertEqual(tokens, [1, 2])
-        self.assertEqual(single_sampler.call_count, 2)
+        torch.testing.assert_close(logits, original)
+        torch.testing.assert_close(
+            adjusted, torch.tensor([[1.0, 2.0, 2.0], [4.0, 3.0, 2.5]])
+        )
+
+    def test_single_sampler_does_not_clone_without_penalty(self) -> None:
+        logits = torch.tensor([[1.0, 4.0, 2.0]])
+        with patch.object(torch.Tensor, "clone", side_effect=AssertionError):
+            token = sample_token(logits, SamplingConfig(temperature=0), [1])
+        self.assertEqual(token, 1)
+
+    def test_single_sampler_clones_when_penalty_is_active(self) -> None:
+        logits = torch.tensor([[1.0, 4.0, 2.0]])
+        original = logits.clone()
+
+        token = sample_token(
+            logits,
+            SamplingConfig(temperature=0, repetition_penalty=10.0),
+            [1],
+        )
+
+        self.assertEqual(token, 2)
+        torch.testing.assert_close(logits, original)
+
+    def test_top_p_paths_launch_softmax_once(self) -> None:
+        logits = torch.tensor([[10.0, 9.0, 1.0], [8.0, 7.0, 2.0]])
+        config = SamplingConfig(temperature=1.0, top_k=3, top_p=0.8)
+        real_softmax = torch.softmax
+
+        with patch("torch.softmax", wraps=real_softmax) as single_softmax:
+            sample_token(logits[:1], config)
+        self.assertEqual(single_softmax.call_count, 1)
+
+        with patch("torch.softmax", wraps=real_softmax) as batch_softmax:
+            sample_batch(logits, config, [[], []])
+        self.assertEqual(batch_softmax.call_count, 1)
+
+    def test_batch_sampler_performs_one_host_transfer(self) -> None:
+        logits = torch.tensor([[1.0, 4.0, 2.0], [8.0, 3.0, 5.0]])
+        with patch.object(
+            torch.Tensor,
+            "tolist",
+            return_value=[1, 0],
+        ) as tolist:
+            tokens = sample_batch(logits, SamplingConfig(temperature=0), [[], []])
+
+        self.assertEqual(tokens, [1, 0])
+        self.assertEqual(tolist.call_count, 1)
+
+    def test_batch_penalty_with_all_empty_histories_does_not_clone(self) -> None:
+        logits = torch.tensor([[1.0, 4.0], [8.0, 3.0]])
+        with patch.object(torch.Tensor, "clone", side_effect=AssertionError):
+            adjusted = apply_repetition_penalty_batch(logits, [[], []], 2.0)
+        self.assertIs(adjusted, logits)
+
+    def test_batch_sampling_maps_candidates_back_to_vocab_ids(self) -> None:
+        logits = torch.tensor([[1.0, 8.0, 3.0, 7.0], [9.0, 2.0, 8.0, 1.0]])
+        config = SamplingConfig(temperature=1.0, top_k=2, top_p=1.0)
+        chosen_candidates = torch.tensor([[1], [0]])
+
+        with patch("torch.multinomial", return_value=chosen_candidates):
+            tokens = sample_batch(logits, config, [[], []])
+
+        self.assertEqual(tokens, [3, 0])
+
+    def test_top_k_runs_before_temperature_scaling(self) -> None:
+        logits = torch.tensor([[1.0, 8.0, 3.0, 7.0]])
+        config = SamplingConfig(temperature=0.5, top_k=2, top_p=1.0)
+
+        with patch("torch.topk", wraps=torch.topk) as topk:
+            sample_batch(logits, config, [[]])
+
+        self.assertIs(topk.call_args.args[0], logits)
+
+    def test_top_k_zero_maps_sorted_candidate_back_to_vocab_id(self) -> None:
+        logits = torch.tensor([[1.0, 8.0, 3.0, 7.0]])
+        config = SamplingConfig(temperature=1.0, top_k=0, top_p=0.95)
+
+        with patch("torch.multinomial", return_value=torch.tensor([[2]])):
+            tokens = sample_batch(logits, config, [[]])
+
+        self.assertEqual(tokens, [2])
+
+    def test_penalty_changes_the_top_k_candidate(self) -> None:
+        logits = torch.tensor([[10.0, 9.0, 1.0]])
+        config = SamplingConfig(
+            temperature=1.0,
+            top_k=1,
+            top_p=1.0,
+            repetition_penalty=2.0,
+        )
+
+        self.assertEqual(sample_batch(logits, config, [[0]]), [1])
+
+    def test_single_and_batch_top_k_keep_exactly_k_tied_candidates(self) -> None:
+        logits = torch.tensor([[10.0, 9.0, 9.0, 9.0]])
+        config = SamplingConfig(temperature=1.0, top_k=2, top_p=1.0)
+        captured_shapes = []
+
+        def choose_first(probs: torch.Tensor, num_samples: int) -> torch.Tensor:
+            captured_shapes.append(tuple(probs.shape))
+            return torch.zeros((probs.shape[0], num_samples), dtype=torch.long)
+
+        with patch("torch.multinomial", side_effect=choose_first):
+            sample_token(logits, config)
+            sample_batch(logits, config, [[]])
+
+        self.assertEqual(captured_shapes, [(1, 2), (1, 2)])
+
+    def test_top_p_never_removes_the_highest_candidate(self) -> None:
+        logits = torch.tensor([[10.0, 9.0, 1.0]])
+        config = SamplingConfig(temperature=1.0, top_k=3, top_p=0.01)
+
+        for _ in range(10):
+            self.assertEqual(sample_batch(logits, config, [[]]), [0])
 
 
 class PrefillProjectionTests(unittest.TestCase):
