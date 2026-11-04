@@ -264,7 +264,6 @@ async def send_request(
         "model": "default",
         "messages": request["messages"],
         "max_tokens": request["max_tokens"],
-        "temperature": 0,
         "stream": True,
     }
     if request["fixed_output"]:
