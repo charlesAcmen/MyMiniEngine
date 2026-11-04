@@ -20,7 +20,7 @@ import uuid
 from dataclasses import asdict
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -65,6 +65,20 @@ class ChatCompletionRequest(BaseModel):
 # ── Endpoints ───────────────────────────────────────────────────────────
 
 
+def validate_sampling_overrides(
+    raw: ChatCompletionRequest, config: SamplingConfig
+) -> None:
+    """Reject request-level sampling changes without silently ignoring them."""
+    for field in ("temperature", "top_p", "top_k", "repetition_penalty"):
+        requested = getattr(raw, field)
+        configured = getattr(config, field)
+        if requested is not None and requested != configured:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field} is fixed by this service at {configured}",
+            )
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -72,6 +86,7 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
+    assert engine is not None
     return {
         "object": "list",
         "data": [
@@ -88,6 +103,7 @@ async def list_models():
 @app.post("/v1/chat/completions")
 async def chat_completions(raw: ChatCompletionRequest):
     assert engine is not None and scheduler is not None
+    validate_sampling_overrides(raw, engine.sampling_config)
 
     # Tokenize the conversation using the model's chat template
     messages = [{"role": m.role, "content": m.content} for m in raw.messages]
