@@ -139,10 +139,17 @@ class ServingJsonTests(unittest.TestCase):
             input_len_min_ratio=1.0,
             concurrencies=[1],
             prompt_data_dir=Path("data"),
+            sampling_config={
+                "temperature": 0.6,
+                "top_k": 20,
+                "top_p": 0.95,
+                "repetition_penalty": 1.0,
+            },
             seed=42,
         )
         report = serving_report(args, {1: [self._result(0.0, 0.1, 1.0, 4)]})
         self.assertEqual(report["benchmark"], "serving")
+        self.assertEqual(report["parameters"]["sampling_config"]["top_k"], 20)
         self.assertEqual(report["results"]["1"]["summary"]["successes"], 1)
         self.assertEqual(report["results"]["1"]["requests"][0]["tpot_seconds"], 0.3)
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -158,6 +165,12 @@ class ServingJsonTests(unittest.TestCase):
             concurrency=2,
             base_url="http://127.0.0.1:8000",
             model="local-model",
+            sampling_config={
+                "temperature": 0.0,
+                "top_k": 20,
+                "top_p": 0.95,
+                "repetition_penalty": 1.0,
+            },
             subjects=None,
         )
         results = [
@@ -169,6 +182,9 @@ class ServingJsonTests(unittest.TestCase):
         self.assertEqual(report["summary"]["accuracy"], 0.5)
         self.assertEqual(report["summary"]["average_latency_seconds"], 1.5)
         self.assertEqual(report["parameters"]["model"], "local-model")
+        self.assertEqual(
+            report["parameters"]["sampling_config"]["temperature"], 0.0
+        )
 
 
 class AccuracyTransportTests(unittest.IsolatedAsyncioTestCase):

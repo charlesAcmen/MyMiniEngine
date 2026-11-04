@@ -3,7 +3,7 @@
 from collections import deque
 import unittest
 
-from miniengine.core import Request, RequestStatus, SamplingParams
+from miniengine.core import Request, RequestStatus
 from miniengine.scheduler import Scheduler
 
 
@@ -69,7 +69,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         return Request(
             request_id=request_id,
             input_ids=[1, 2],
-            sampling_params=SamplingParams(max_new_tokens=max_new_tokens),
+            max_new_tokens=max_new_tokens,
         )
 
     @staticmethod
@@ -194,7 +194,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         )
         scheduler = Scheduler(engine, max_running=1)
         request = self._request("fixed", max_new_tokens=3)
-        request.sampling_params.ignore_eos = True
+        request.ignore_eos = True
         scheduler.add_request(request)
 
         self.assertEqual(scheduler.step_static_batch(), [])
@@ -211,7 +211,7 @@ class ContinuousBatchSchedulerTest(unittest.TestCase):
         return Request(
             request_id=request_id,
             input_ids=[1, 2],
-            sampling_params=SamplingParams(max_new_tokens=max_new_tokens),
+            max_new_tokens=max_new_tokens,
         )
 
     def test_newly_prefilled_requests_join_decode_in_the_same_iteration(self) -> None:

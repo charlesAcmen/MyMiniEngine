@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from miniengine.core import Request, SamplingParams
+from miniengine.core import Request, SamplingConfig
 from miniengine.engine import Engine
 from miniengine.model import CausalLM, ModelConfig
 
@@ -26,6 +26,7 @@ class BatchedDecodeTest(unittest.TestCase):
         self.engine.device = "cpu"
         self.engine.dtype = torch.float32
         self.engine.model = CausalLM(config).eval()
+        self.engine.sampling_config = SamplingConfig(temperature=0)
 
     @staticmethod
     def _clone_request(source: Request) -> Request:
@@ -33,7 +34,6 @@ class BatchedDecodeTest(unittest.TestCase):
             request_id=f"clone-{source.request_id}",
             input_ids=list(source.input_ids),
             output_ids=list(source.output_ids),
-            sampling_params=SamplingParams(temperature=0),
         )
         clone.kv_cache = [
             (key.clone(), value.clone()) for key, value in source.kv_cache
@@ -44,7 +44,6 @@ class BatchedDecodeTest(unittest.TestCase):
         request = Request(
             request_id=request_id,
             input_ids=input_ids,
-            sampling_params=SamplingParams(temperature=0),
         )
         request.output_ids.append(self.engine.prefill(request))
         return request

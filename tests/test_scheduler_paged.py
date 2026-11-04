@@ -7,7 +7,7 @@ import unittest
 
 import torch
 
-from miniengine.core import Request, SamplingParams
+from miniengine.core import Request
 from miniengine.kv_memory_pool import KVMemoryPool
 from miniengine.paged_attention import (
     allocate_prefill_pages,
@@ -81,7 +81,7 @@ class PagedSchedulerTest(unittest.TestCase):
         return Request(
             request_id=request_id,
             input_ids=list(range(prompt_len)),
-            sampling_params=SamplingParams(max_new_tokens=2),
+            max_new_tokens=2,
         )
 
     def test_packed_prefill_decode_and_finish_release_all_pages(self) -> None:
