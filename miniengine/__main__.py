@@ -15,6 +15,7 @@ import torch
 import uvicorn
 
 from miniengine.cli import open_unit_interval, port_number, positive_int
+from miniengine.core import SamplingConfig
 from miniengine.engine import Engine
 from miniengine.scheduler import Scheduler
 from miniengine import server as srv
@@ -63,6 +64,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.80,
         help="Fraction of GPU memory reserved for model weights plus the fixed KV pool",
     )
+    p.add_argument(
+        "--sampling-config",
+        type=SamplingConfig.from_json,
+        default=SamplingConfig(),
+        metavar="PATH",
+        help="JSON file containing the server-wide token sampling policy",
+    )
     return p.parse_args(argv)
 
 
@@ -86,6 +94,7 @@ def main() -> None:
         page_size=args.page_size,
         mem_fraction_static=args.mem_fraction_static,
         mode=args.mode,
+        sampling_config=args.sampling_config,
     )
     sched = Scheduler(engine=engine, max_running=args.max_running)
 

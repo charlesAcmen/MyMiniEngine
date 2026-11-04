@@ -324,6 +324,7 @@ def result_parameters(args) -> dict:
         "concurrency": args.concurrency,
         "base_url": args.base_url,
         "model": getattr(args, "model", None),
+        "sampling_config": getattr(args, "sampling_config", None),
         "subjects": args.subjects,
     }
 
@@ -371,6 +372,14 @@ def main():
     print(f"  Concurrency : {args.concurrency}")
     print(f"  Server      : {args.base_url}")
     print(f"  Model       : {args.model}")
+    print(
+        "  Sampling    : "
+        + (
+            json.dumps(args.sampling_config, sort_keys=True)
+            if args.sampling_config is not None
+            else "unknown (server did not expose sampling_config)"
+        )
+    )
     print(f"{'=' * 60}\n")
 
     # Load dataset

@@ -5,15 +5,18 @@ These structures flow through the entire system:
   Client request → Server → Scheduler → Engine → Scheduler → Server → Client response
 
 Key types:
-  - SamplingParams: controls token generation (temperature, top_k, top_p, etc.)
+  - SamplingConfig: server-wide token generation policy
   - Request: tracks the full lifecycle of a single generation request
   - TokenOutput: a single streamed token delivered to the client
 """
 
+import json
+import math
 import queue
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from pathlib import Path
 from typing import Any
 
 
@@ -25,18 +28,68 @@ class RequestStatus(Enum):
     FINISHED = auto()  # Generation complete
 
 
-@dataclass
-class SamplingParams:
-    """Parameters that control how the next token is sampled."""
+@dataclass(frozen=True)
+class SamplingConfig:
+    """One immutable token-sampling policy shared by a server instance."""
 
-    max_new_tokens: int = 256
     temperature: float = 0.6
     top_p: float = 0.95
     top_k: int = 20
     repetition_penalty: float = 1.0
-    # Benchmark-only: continue to the length limit even after an EOS token.
-    ignore_eos: bool = False
-    # If temperature == 0 → greedy decoding (argmax)
+
+    #hook:validate for every source of sampling config,including test,server config and request config
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.temperature, bool)
+            or not isinstance(self.temperature, (int, float))
+            or not math.isfinite(self.temperature)
+            or self.temperature < 0
+        ):
+            raise ValueError("temperature must be a finite number >= 0")
+        if (
+            isinstance(self.top_p, bool)
+            or not isinstance(self.top_p, (int, float))
+            or not math.isfinite(self.top_p)
+            or not 0 < self.top_p <= 1
+        ):
+            raise ValueError("top_p must be a finite number in (0, 1]")
+        if (
+            isinstance(self.top_k, bool)
+            or not isinstance(self.top_k, int)
+            or self.top_k < 0
+        ):
+            raise ValueError("top_k must be a non-negative integer")
+        if (
+            isinstance(self.repetition_penalty, bool)
+            or not isinstance(self.repetition_penalty, (int, float))
+            or not math.isfinite(self.repetition_penalty)
+            or self.repetition_penalty <= 0
+        ):
+            raise ValueError("repetition_penalty must be a finite number > 0")
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "SamplingConfig":
+        """Load a service sampling policy from a JSON object."""
+        config_path = Path(path)
+        try:
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"cannot load sampling config {config_path}: {exc}"
+            ) from exc
+        if not isinstance(raw, dict):
+            raise ValueError("sampling config must be a JSON object")
+        try:
+            return cls(**raw)
+        except TypeError as exc:
+            raise ValueError(f"invalid sampling config fields: {exc}") from exc
+
+    def validate_vocab_size(self, vocab_size: int) -> None:
+        """Reject a finite top-k that is equivalent to the full vocabulary."""
+        if self.top_k >= vocab_size and self.top_k != 0:
+            raise ValueError(
+                f"top_k must be 0 or smaller than vocab_size ({vocab_size})"
+            )
 
 
 @dataclass

@@ -28,7 +28,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer
 
-from miniengine.core import Request
+from miniengine.core import Request, SamplingConfig
 from miniengine.kv_memory_pool import KVMemoryPool
 from miniengine.model import CausalLM, ModelConfig, load_weights, require_local_model_dir
 from miniengine.paged_attention import (
@@ -56,12 +56,14 @@ class Engine:
         page_size: int = 256,
         mem_fraction_static: float = 0.80,
         mode: str = "batched",
+        sampling_config: SamplingConfig = SamplingConfig(),
     ):
         if mode not in {"batched", "paged"}:
             raise ValueError(f"unsupported engine mode: {mode}")
         self.device = device
         self.dtype = dtype
         self.mode = mode
+        self.sampling_config = sampling_config
         local_model_path = require_local_model_dir(model_path)
 
         # ── Tokenizer files are read from the same local checkpoint. ────
@@ -73,6 +75,7 @@ class Engine:
         # ── Model (bare-bone PyTorch, loaded from safetensors) ──────────
         logger.info("Loading model config from %s …", local_model_path)
         config = ModelConfig.from_pretrained(str(local_model_path))
+        sampling_config.validate_vocab_size(config.vocab_size)
         logger.info(
             "Config: layers=%d, hidden=%d, heads=%d, kv_heads=%d, head_dim=%d, "
             "intermediate=%d, vocab=%d, tie_embed=%s",
@@ -275,7 +278,7 @@ class Engine:
 
         # Sample from the last position
         return sample_token(
-            logits[:, -1, :], request.sampling_params, request.output_ids
+            logits[:, -1, :], self.sampling_config, request.output_ids
         )
 
     def batched_prefill(self, requests: list[Request]) -> list[int]:
@@ -319,7 +322,7 @@ class Engine:
             # state before the vocabulary projection, so logits is (B, V).
             return sample_batch(
                 logits,
-                [request.sampling_params for request in requests],
+                self.sampling_config,
                 [request.output_ids for request in requests],
             )
         except Exception:
@@ -355,7 +358,7 @@ class Engine:
         request.kv_cache = kv_caches
 
         return sample_token(
-            logits[:, -1, :], request.sampling_params, request.output_ids
+            logits[:, -1, :], self.sampling_config, request.output_ids
         )
 
     @torch.inference_mode()
@@ -398,7 +401,7 @@ class Engine:
         commit_decode_batch(requests)
         return sample_batch(
             logits[:, -1, :],
-            [request.sampling_params for request in requests],
+            self.sampling_config,
             [request.output_ids for request in requests],
         )
 
@@ -560,7 +563,7 @@ class Engine:
 
         return sample_batch(
             logits[:, -1, :],
-            [request.sampling_params for request in requests],
+            self.sampling_config,
             [request.output_ids for request in requests],
         )
 

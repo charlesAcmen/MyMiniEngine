@@ -20,7 +20,7 @@ The engine serves an OpenAI-compatible API and is structured so that the **sched
 
 | Module | File | Role |
 |--------|------|------|
-| **core** | `miniengine/core.py` | Data structures: `Request`, `SamplingParams`, `TokenOutput` |
+| **core** | `miniengine/core.py` | Data structures: `Request`, `SamplingConfig`, `TokenOutput` |
 | **engine** | `miniengine/engine.py` | HuggingFace model wrapper — prefill, decode, tokenize |
 | **sampler** | `miniengine/sampler.py` | Top-k / top-p / temperature / repetition-penalty sampling |
 | **scheduler** | `miniengine/scheduler.py` | Request scheduling loop (**optimization target**) |
@@ -33,7 +33,8 @@ The engine serves an OpenAI-compatible API and is structured so that the **sched
 pip install -e .
 
 # Launch the local model (no Hugging Face cache or network access).
-python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16 --max-running 16
+python -m miniengine --model models/Qwen3-0.6B --dtype bfloat16 --max-running 16 \
+  --sampling-config configs/sampling-default.json
 
 # Test with curl
 curl http://localhost:8000/v1/chat/completions \
@@ -55,8 +56,14 @@ python -m miniengine --model models/Qwen3-0.6B --mode batched --dtype bfloat16
 
 # Milestone 2 Part B (pre-allocated paged KV + packed prefill).
 python -m miniengine --model models/Qwen3-0.6B --mode paged \
-  --dtype bfloat16 --page-size 256
+  --dtype bfloat16 --page-size 256 \
+  --sampling-config configs/sampling-greedy.json
 ```
+
+Sampling is one immutable server-wide policy loaded at startup. Requests may
+omit `temperature`, `top_p`, `top_k`, and `repetition_penalty`, or repeat the
+configured values for client compatibility; conflicting overrides return a
+4xx response. Restart the server with a different JSON file to change policy.
 
 `--page-size` is the number of **tokens** stored by one physical KV-cache
 page (default: 256).  It is a server-startup setting: the benchmark programs

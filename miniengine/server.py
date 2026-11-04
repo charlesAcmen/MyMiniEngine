@@ -17,13 +17,14 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import asdict
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from miniengine.core import Request, SamplingParams, TokenOutput
+from miniengine.core import Request, SamplingConfig, TokenOutput
 from miniengine.engine import Engine
 from miniengine.scheduler import Scheduler
 
@@ -78,6 +79,7 @@ async def list_models():
                 "id": model_id,
                 "object": "model",
                 "owned_by": "miniengine",
+                "sampling_config": asdict(engine.sampling_config),
             }
         ],
     }

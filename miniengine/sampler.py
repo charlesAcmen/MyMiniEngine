@@ -3,7 +3,8 @@
 from collections.abc import Sequence
 
 import torch
-from miniengine.core import SamplingParams
+
+from miniengine.core import SamplingConfig
 
 
 def apply_repetition_penalty(
@@ -24,15 +25,15 @@ def apply_repetition_penalty(
 
 def sample_token(
     logits: torch.Tensor,
-    params: SamplingParams,
+    config: SamplingConfig,
     output_ids: list[int] | None = None,
 ) -> int:
     """
-    Sample one token from logits using the given SamplingParams.
+    Sample one token from logits using the given SamplingConfig.
 
     Args:
         logits: shape (1, vocab_size), raw model output on the last position
-        params: sampling configuration
+        config: sampling configuration
         output_ids: previously generated tokens (for repetition penalty)
 
     Returns:
@@ -74,7 +75,7 @@ def sample_token(
 
 def sample_batch(
     logits: torch.Tensor,
-    params: Sequence[SamplingParams],
+    config: SamplingConfig,
     output_ids: Sequence[list[int]],
 ) -> list[int]:
     """Choose one token per row while preserving per-request sampling rules.

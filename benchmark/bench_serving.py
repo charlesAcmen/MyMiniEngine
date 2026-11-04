@@ -440,6 +440,7 @@ def result_parameters(args) -> dict:
         "input_len_min_ratio": args.input_len_min_ratio,
         "concurrencies": args.concurrencies,
         "prompt_data_dir": str(args.prompt_data_dir),
+        "sampling_config": getattr(args, "sampling_config", None),
         "seed": args.seed,
     }
 
@@ -587,6 +588,14 @@ def main():
     configured_min_input_len = int(args.input_len * args.input_len_min_ratio)
     print(f"  Input min    : {configured_min_input_len} tokens")
     print(f"  Concurrencies: {concurrencies}")
+    print(
+        "  Sampling     : "
+        + (
+            json.dumps(args.sampling_config, sort_keys=True)
+            if args.sampling_config is not None
+            else "unknown (server did not expose sampling_config)"
+        )
+    )
     print(f"  Prompt data  : {args.prompt_data_dir}")
     print(f"{'=' * 60}")
 

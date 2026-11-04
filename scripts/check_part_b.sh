@@ -82,6 +82,7 @@ server_log="${log_dir}/server.log"
     --page-size 256 \
     --mem-fraction-static 0.50 \
     --max-running 2 \
+    --sampling-config "${repo_root}/configs/sampling-greedy.json" \
     --host 127.0.0.1 \
     --port "${port}" >"${server_log}" 2>&1 &
 server_pid=$!
