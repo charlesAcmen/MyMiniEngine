@@ -326,6 +326,7 @@ def result_parameters(args) -> dict:
         "base_url": args.base_url,
         "model": getattr(args, "model", None),
         "sampling_config": getattr(args, "sampling_config", None),
+        "engine_config": getattr(args, "engine_config", None),
         "subjects": args.subjects,
     }
 
@@ -355,6 +356,7 @@ def main():
         server_model = fetch_server_model_metadata(args.base_url)
         args.model = server_model["id"]
         args.sampling_config = server_model.get("sampling_config")
+        args.engine_config = server_model.get("engine_config")
     except (KeyError, RuntimeError):
         print("  ERROR: Could not detect model from server.", flush=True)
         sys.exit(1)
