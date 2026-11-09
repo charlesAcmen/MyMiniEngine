@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import torch
 
-from miniengine.core import SamplingConfig
-from miniengine.model import CausalLM, ModelConfig, RotaryEmbedding
+from miniengine.config import SamplingConfig
+from miniengine.model import CausalLM, ModelConfig, PagedAttentionOps, RotaryEmbedding
 from miniengine.sampler import (
     apply_repetition_penalty_batch,
     sample_batch,
@@ -182,6 +182,26 @@ class PrefillProjectionTests(unittest.TestCase):
         expected = model._project_logits(packed_hidden[[2, 7]])
         self.assertEqual(logits.shape, (2, config.vocab_size))
         torch.testing.assert_close(logits, expected)
+
+    def test_paged_attention_ops_are_installed_once_on_every_layer(self) -> None:
+        config = ModelConfig(
+            vocab_size=16,
+            hidden_size=4,
+            intermediate_size=8,
+            num_hidden_layers=2,
+            num_attention_heads=1,
+            num_key_value_heads=1,
+            head_dim=4,
+        )
+        model = CausalLM(config)
+        prefill = lambda *args, **kwargs: None
+        decode = lambda *args, **kwargs: None
+        ops = PagedAttentionOps(prefill=prefill, decode=decode)
+
+        model.set_paged_attention_ops(ops)
+
+        for layer in model.model.layers:
+            self.assertIs(layer.self_attn._paged_ops, ops)
 
 
 class RotaryCacheTests(unittest.TestCase):

@@ -20,7 +20,8 @@ The engine serves an OpenAI-compatible API and is structured so that the **sched
 
 | Module | File | Role |
 |--------|------|------|
-| **core** | `miniengine/core.py` | Data structures: `Request`, `SamplingConfig`, `TokenOutput` |
+| **config** | `miniengine/config.py` | Immutable service sampling and execution policy. |
+| **core** | `miniengine/core.py` | Runtime data structures: `Request`, `TokenOutput`. |
 | **engine** | `miniengine/engine.py` | HuggingFace model wrapper — prefill, decode, tokenize |
 | **sampler** | `miniengine/sampler.py` | Top-k / top-p / temperature / repetition-penalty sampling |
 | **scheduler** | `miniengine/scheduler.py` | Request scheduling loop (**optimization target**) |

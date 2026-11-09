@@ -24,7 +24,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from miniengine.core import Request, SamplingConfig, TokenOutput
+from miniengine.config import SamplingConfig
+from miniengine.core import Request, TokenOutput
 from miniengine.engine import Engine
 from miniengine.scheduler import Scheduler
 
@@ -86,7 +87,9 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
-    assert engine is not None
+    assert engine is not None and scheduler is not None
+    engine_config = asdict(engine.config)
+    engine_config["max_running"] = scheduler.max_running
     return {
         "object": "list",
         "data": [
@@ -95,6 +98,7 @@ async def list_models():
                 "object": "model",
                 "owned_by": "miniengine",
                 "sampling_config": asdict(engine.sampling_config),
+                "engine_config": engine_config,
             }
         ],
     }

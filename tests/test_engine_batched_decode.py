@@ -4,7 +4,8 @@ import unittest
 
 import torch
 
-from miniengine.core import Request, SamplingConfig
+from miniengine.config import SamplingConfig
+from miniengine.core import Request
 from miniengine.engine import Engine
 from miniengine.model import CausalLM, ModelConfig
 

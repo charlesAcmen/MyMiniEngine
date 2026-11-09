@@ -145,11 +145,13 @@ class ServingJsonTests(unittest.TestCase):
                 "top_p": 0.95,
                 "repetition_penalty": 1.0,
             },
+            engine_config={"mode": "paged", "compile": {"enabled": True}},
             seed=42,
         )
         report = serving_report(args, {1: [self._result(0.0, 0.1, 1.0, 4)]})
         self.assertEqual(report["benchmark"], "serving")
         self.assertEqual(report["parameters"]["sampling_config"]["top_k"], 20)
+        self.assertTrue(report["parameters"]["engine_config"]["compile"]["enabled"])
         self.assertEqual(report["results"]["1"]["summary"]["successes"], 1)
         self.assertEqual(report["results"]["1"]["requests"][0]["tpot_seconds"], 0.3)
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -171,6 +173,7 @@ class ServingJsonTests(unittest.TestCase):
                 "top_p": 0.95,
                 "repetition_penalty": 1.0,
             },
+            engine_config={"mode": "paged"},
             subjects=None,
         )
         results = [

@@ -94,16 +94,11 @@ def main() -> None:
     )
     logger = logging.getLogger("miniengine")
 
-    dtype = getattr(torch, args.dtype)
     logger.info("Initializing engine  model=%s  dtype=%s", args.model, args.dtype)
 
     engine = Engine(
         model_path=args.model,
-        dtype=dtype,
-        device=args.device,
-        page_size=args.page_size,
-        mem_fraction_static=args.mem_fraction_static,
-        mode=args.mode,
+        engine_config=args.engine_config,
         sampling_config=args.sampling_config,
     )
     sched = Scheduler(engine=engine, max_running=args.max_running)

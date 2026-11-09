@@ -25,6 +25,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from miniengine.compilation import PagedDecodeOps, build_paged_decode_ops
+from miniengine.config import CompileConfig
+
 logger = logging.getLogger(__name__)
 
 

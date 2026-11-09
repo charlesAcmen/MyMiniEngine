@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 import torch
 
-from miniengine.core import SamplingConfig
+from miniengine.config import SamplingConfig
 
 
 def apply_repetition_penalty(

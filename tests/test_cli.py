@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from miniengine.__main__ import parse_args
-from miniengine.core import SamplingConfig
+from miniengine.config import SamplingConfig
 from miniengine.server import (
     ChatCompletionRequest,
     ChatMessage,
@@ -26,6 +26,8 @@ class ServerCliTests(unittest.TestCase):
         self.assertEqual(args.page_size, 256)
         self.assertEqual(args.mode, "batched")
         self.assertEqual(args.sampling_config, SamplingConfig())
+        self.assertFalse(args.engine_config.compile.enabled)
+        self.assertFalse(args.engine_config.cuda_graph.enabled)
 
     def test_paged_mode_is_selectable(self) -> None:
         args = parse_args(["--model", "local-model", "--mode", "paged"])
@@ -51,6 +53,56 @@ class ServerCliTests(unittest.TestCase):
             ["--mem-fraction-static", "1.0"],
             ["--max-running", "0"],
             ["--port", "65536"],
+        ]
+        for flags in invalid_flags:
+            with (
+                self.subTest(flags=flags),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                parse_args(["--model", "local-model", *flags])
+
+    def test_part_c_flags_build_one_engine_config(self) -> None:
+        args = parse_args(
+            [
+                "--model",
+                "local-model",
+                "--mode",
+                "paged",
+                "--max-running",
+                "7",
+                "--torch-compile",
+                "--cuda-graph",
+                "--cuda-graph-batch-sizes",
+                "1,3,7",
+            ]
+        )
+        self.assertTrue(args.engine_config.compile.enabled)
+        self.assertTrue(args.engine_config.cuda_graph.enabled)
+        self.assertEqual(args.engine_config.cuda_graph.batch_sizes, (1, 3, 7))
+
+    def test_invalid_part_c_combinations_exit_from_argparse(self) -> None:
+        invalid_flags = [
+            ["--torch-compile"],
+            ["--mode", "paged", "--cuda-graph"],
+            [
+                "--mode",
+                "paged",
+                "--torch-compile",
+                "--cuda-graph",
+                "--max-running",
+                "8",
+                "--cuda-graph-batch-sizes",
+                "1,2,4",
+            ],
+            [
+                "--mode",
+                "paged",
+                "--torch-compile",
+                "--cuda-graph",
+                "--cuda-graph-batch-sizes",
+                "1,4,2",
+            ],
         ]
         for flags in invalid_flags:
             with (
