@@ -51,18 +51,13 @@ class Engine:
     def __init__(
         self,
         model_path: str,
-        dtype: torch.dtype = torch.bfloat16,
-        device: str = "cuda",
-        page_size: int = 256,
-        mem_fraction_static: float = 0.80,
-        mode: str = "batched",
+        engine_config: EngineConfig = EngineConfig(),
         sampling_config: SamplingConfig = SamplingConfig(),
     ):
-        if mode not in {"batched", "paged"}:
-            raise ValueError(f"unsupported engine mode: {mode}")
-        self.device = device
-        self.dtype = dtype
-        self.mode = mode
+        self.config = engine_config
+        self.device = engine_config.device
+        self.dtype = getattr(torch, engine_config.dtype)
+        self.mode = engine_config.mode
         self.sampling_config = sampling_config
         local_model_path = require_local_model_dir(model_path)
 
@@ -74,19 +69,19 @@ class Engine:
 
         # ── Model (bare-bone PyTorch, loaded from safetensors) ──────────
         logger.info("Loading model config from %s …", local_model_path)
-        config = ModelConfig.from_pretrained(str(local_model_path))
-        sampling_config.validate_vocab_size(config.vocab_size)
+        model_config = ModelConfig.from_pretrained(str(local_model_path))
+        sampling_config.validate_vocab_size(model_config.vocab_size)
         logger.info(
             "Config: layers=%d, hidden=%d, heads=%d, kv_heads=%d, head_dim=%d, "
             "intermediate=%d, vocab=%d, tie_embed=%s",
-            config.num_hidden_layers,
-            config.hidden_size,
-            config.num_attention_heads,
-            config.num_key_value_heads,
-            config.head_dim,
-            config.intermediate_size,
-            config.vocab_size,
-            config.tie_word_embeddings,
+            model_config.num_hidden_layers,
+            model_config.hidden_size,
+            model_config.num_attention_heads,
+            model_config.num_key_value_heads,
+            model_config.head_dim,
+            model_config.intermediate_size,
+            model_config.vocab_size,
+            model_config.tie_word_embeddings,
         )
 
         self.model = CausalLM(config)
@@ -97,20 +92,20 @@ class Engine:
         # would reduce its usable batch capacity and invalidate comparisons.
         # Paged mode owns both the fixed pool and the optional FA extension.
         self.kv_pool: KVMemoryPool | None = None
-        self.flash_attn_varlen_func = None
-        self.flash_attn_with_kvcache = None
-        if mode == "paged":
-                    # The Engine owns the pool because the pool layout is fixed by this
-        # model's architecture, dtype, and accelerator device for its whole lifetime.
+        self.paged_attention_ops: PagedAttentionOps | None = None
+        self.cuda_graph_runner: CudaGraphRunner | None = None
+        if self.mode == "paged":
+            # The Engine owns resources fixed by the model architecture, dtype,
+            # and accelerator for the lifetime of this serving instance.
             self.kv_pool = self._create_kv_pool(
-                config=config,
-                page_size=page_size,
-                mem_fraction_static=mem_fraction_static,
+                config=model_config,
+                page_size=engine_config.page_size,
+                mem_fraction_static=engine_config.mem_fraction_static,
             )
-            (
-                self.flash_attn_varlen_func,
-                self.flash_attn_with_kvcache,
-            ) = require_flash_attention()
+            prefill_op, decode_op = require_flash_attention()
+            self.paged_attention_ops = PagedAttentionOps(prefill_op, decode_op)
+            self.model.set_paged_attention_ops(self.paged_attention_ops)
+            
 
         # Bind the serving strategy once at construction. Scheduler code calls
         # these stable interfaces without branching on the mode in its hot loop.
@@ -119,7 +114,7 @@ class Engine:
         self.prefill_batch: Callable[[list[Request]], list[int]]
         self.decode_batch: Callable[[list[Request]], list[int]]
         self.release_request: Callable[[Request], None]
-        if mode == "paged":
+        if self.mode == "paged":
             self.prefill_batch = self.paged_prefill
             self.decode_batch = self.paged_decode
             self.release_request = self._release_paged_request
@@ -168,7 +163,10 @@ class Engine:
                 f"cannot derive a KV pool budget for {device}: its PyTorch backend "
                 "does not expose accelerator memory information"
             ) from exc
-        weight_bytes = sum(parameter.numel() * parameter.element_size() for parameter in self.model.parameters())
+        weight_bytes = sum(
+            parameter.numel() * parameter.element_size()
+            for parameter in self.model.parameters()
+        )
         static_budget = int(total_bytes * mem_fraction_static)
         kv_budget = static_budget - weight_bytes
         if kv_budget <= 0:
@@ -299,7 +297,7 @@ class Engine:
         """
         if not requests:
             return []
-        if self.flash_attn_varlen_func is None or self.kv_pool is None:
+        if self.paged_attention_ops is None or self.kv_pool is None:
             raise RuntimeError("paged_prefill requires Engine(mode='paged')")
         pool = self.kv_pool
 
@@ -370,24 +368,26 @@ class Engine:
         """
         if not requests:
             return []
-        if self.flash_attn_with_kvcache is None or self.kv_pool is None:
+        if self.paged_attention_ops is None or self.kv_pool is None:
             raise RuntimeError("paged_decode requires Engine(mode='paged')")
         pool = self.kv_pool
 
         original_page_counts = [len(request.page_table) for request in requests]
         decode = build_paged_decode(requests, pool)
         try:
-            logits = self.model.forward_paged_decode(
-                decode.input_ids,
-                decode.position_ids,
-                pool.kv_caches,
-                decode.cache_seqlens,
-                decode.block_table,
-                # A longest committed length of 5 decodes at position 5, so
-                # every request is covered by a 6-row RoPE cache.
-                max(request.kv_seq_len for request in requests) + 1,
-                self.flash_attn_with_kvcache,
-            )
+            if self.cuda_graph_runner is None:
+                logits = self.model.forward_paged_decode(
+                    decode.input_ids,
+                    decode.position_ids,
+                    pool.kv_caches,
+                    decode.cache_seqlens,
+                    decode.block_table,
+                    # A longest committed length of 5 decodes at position 5,
+                    # so every request is covered by a 6-row RoPE cache.
+                    max(request.kv_seq_len for request in requests) + 1,
+                )
+            else:
+                logits = self.cuda_graph_runner(decode)
         except Exception:
             # A failed layer may have written the uncommitted slot, but
             # kv_seq_len still hides it. Return only pages added by this call;
@@ -431,7 +431,7 @@ class Engine:
 
         model_parameter = next(self.model.parameters())
         model_device = model_parameter.device
-        #for Qwen3-0.6B 28 layers
+        # Qwen3-0.6B has 28 layers
         num_layers = len(requests[0].kv_cache or [])
         # Admission validates that every request has the expected layer count.
         # Original hot-path check retained for learning/debug reference:
