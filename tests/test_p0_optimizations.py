@@ -176,7 +176,6 @@ class PrefillProjectionTests(unittest.TestCase):
                 slot_mapping=torch.zeros(8, dtype=torch.long),
                 cu_seqlens=cu_seqlens,
                 max_seqlen=5,
-                flash_attn_varlen_func=lambda *args, **kwargs: None,
             )
 
         expected = model._project_logits(packed_hidden[[2, 7]])
