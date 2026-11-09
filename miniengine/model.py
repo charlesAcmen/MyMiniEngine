@@ -72,6 +72,16 @@ class ModelConfig:
         )
 
 
+@dataclass(frozen=True)
+class PagedAttentionOps:
+    """FlashAttention entry points installed once for paged execution."""
+
+    #...:multiple parameters of any type potential
+    #torch.Tensor:return type
+    prefill: Callable[..., torch.Tensor]
+    decode: Callable[..., torch.Tensor]
+
+
 # ── Building blocks ─────────────────────────────────────────────────────
 
 
@@ -193,6 +203,16 @@ class Attention(nn.Module):
         # Qwen3: RMSNorm on Q and K after projection (per-head)
         self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self._paged_ops: PagedAttentionOps | None = None
+
+    def set_paged_ops(self, ops: PagedAttentionOps) -> None:
+        """Install the optional paged-attention backend before serving starts."""
+        self._paged_ops = ops
+
+    def _require_paged_ops(self) -> PagedAttentionOps:
+        if self._paged_ops is None:
+            raise RuntimeError("paged attention operations have not been installed")
+        return self._paged_ops
 
     def forward(
         self,
@@ -275,7 +295,6 @@ class Attention(nn.Module):
         slot_mapping: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
-        flash_attn_varlen_func: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Run packed causal prefill and persist K/V in the page pool.
 
@@ -316,7 +335,7 @@ class Attention(nn.Module):
             0, slot_mapping, v_tokens
         )
 
-        out = flash_attn_varlen_func(
+        out = self._require_paged_ops().prefill(
             q_tokens,
             k_tokens,
             v_tokens,
@@ -338,7 +357,6 @@ class Attention(nn.Module):
         v_cache: torch.Tensor,
         cache_seqlens: torch.Tensor,
         block_table: torch.Tensor,
-        flash_attn_with_kvcache: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Append one token per request and attend through physical pages.
 
@@ -439,7 +457,6 @@ class TransformerBlock(nn.Module):
         slot_mapping: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
-        flash_attn_varlen_func: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Run one transformer layer over a packed ragged prefill batch."""
         residual = hidden
@@ -453,7 +470,6 @@ class TransformerBlock(nn.Module):
             slot_mapping,
             cu_seqlens,
             max_seqlen,
-            flash_attn_varlen_func,
         )
         hidden = residual + hidden
 
@@ -471,7 +487,6 @@ class TransformerBlock(nn.Module):
         v_cache: torch.Tensor,
         cache_seqlens: torch.Tensor,
         block_table: torch.Tensor,
-        flash_attn_with_kvcache: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Run one transformer layer for a one-token paged decode batch."""
         residual = hidden
@@ -549,7 +564,6 @@ class TransformerModel(nn.Module):
         slot_mapping: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
-        flash_attn_varlen_func: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Run every layer over one packed token axis without prompt padding."""
         hidden = self.embed_tokens(input_ids)
@@ -570,7 +584,6 @@ class TransformerModel(nn.Module):
                 slot_mapping,
                 cu_seqlens,
                 max_seqlen,
-                flash_attn_varlen_func,
             )
         return self.norm(hidden)
 
@@ -582,7 +595,6 @@ class TransformerModel(nn.Module):
         cache_seqlens: torch.Tensor,
         block_table: torch.Tensor,
         rope_cache_len: int,
-        flash_attn_with_kvcache: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Run every layer while all historical K/V stays in the pool."""
         hidden = self.embed_tokens(input_ids)
@@ -596,7 +608,6 @@ class TransformerModel(nn.Module):
                 v_cache,
                 cache_seqlens,
                 block_table,
-                flash_attn_with_kvcache,
             )
         return self.norm(hidden)
 
@@ -647,7 +658,6 @@ class CausalLM(nn.Module):
         slot_mapping: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
-        flash_attn_varlen_func: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Write every prompt K/V but project only each request's final token."""
         hidden = self.model.forward_paged_prefill(
@@ -657,7 +667,6 @@ class CausalLM(nn.Module):
             slot_mapping,
             cu_seqlens,
             max_seqlen,
-            flash_attn_varlen_func,
         )
         # Each request samples from the final token in its packed segment.
         #[0, 3, 8]->[2, 7]
@@ -677,7 +686,6 @@ class CausalLM(nn.Module):
         cache_seqlens: torch.Tensor,
         block_table: torch.Tensor,
         rope_cache_len: int,
-        flash_attn_with_kvcache: Callable[..., torch.Tensor],
     ) -> torch.Tensor:
         """Return next-token logits after in-place paged KV append."""
         hidden = self.model.forward_paged_decode(
@@ -687,7 +695,6 @@ class CausalLM(nn.Module):
             cache_seqlens,
             block_table,
             rope_cache_len,
-            flash_attn_with_kvcache,
         )
         return self._project_logits(hidden)
 
