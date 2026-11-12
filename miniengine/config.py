@@ -76,10 +76,14 @@ class CompileConfig:
     """Stable torch.compile policy for paged decode tensor regions."""
 
     enabled: bool = False
+    #func via TorchDynamo->FX graph via TorchInductor->triton/CUDA kernels
     backend: str = "inductor"
     mode: str = "default"
+    #true:fallback to eager is not allowed(FA is excluded,so fullgraph is allowed to enable here)
     fullgraph: bool = True
-    dynamic_batch: bool = True
+    #decode batch size changes in continuous batching
+    #recompilation storm even recompile limit may happen if dynamic_batch is disabled
+    dynamic_batch: bool = True#B=1:特化的graph, B>1:share one symbolic graph
     target: str = "paged_decode_tensor_regions"
 
 
