@@ -490,23 +490,62 @@ class TransformerBlock(nn.Module):
     ) -> torch.Tensor:
         """Run one transformer layer for a one-token paged decode batch."""
         residual = hidden
-        hidden = self.input_layernorm(hidden)
-        hidden = self.self_attn.forward_paged_decode(
+        # old imple:launch pytorch one step by one
+        # hidden = self.input_layernorm(hidden)
+        # hidden = self.self_attn.forward_paged_decode(
+        #     hidden,
+        #     cos,
+        #     sin,
+        #     k_cache,
+        #     v_cache,
+        #     cache_seqlens,
+        #     block_table,
+        #     flash_attn_with_kvcache,
+        # )
+        # hidden = residual + hidden
+
+        # residual = hidden
+        # hidden = self.post_attention_layernorm(hidden)
+        # hidden = self.mlp(hidden)
+        # return residual + hidden
+
+
+
+        #new imple:torch.compile
+        q, k, v = self._paged_decode_ops.pre_attention(
             hidden,
             cos,
             sin,
+            self.input_layernorm.weight,
+            self.self_attn.q_proj.weight,
+            self.self_attn.k_proj.weight,
+            self.self_attn.v_proj.weight,
+            self.self_attn.q_norm.weight,
+            self.self_attn.k_norm.weight,
+            self._rms_norm_eps,
+            self.self_attn.num_heads,
+            self.self_attn.num_kv_heads,
+            self.self_attn.head_dim,
+        )
+        attention_output = self.self_attn.forward_paged_decode(
+            q,
+            k,
+            v,
             k_cache,
             v_cache,
             cache_seqlens,
             block_table,
-            flash_attn_with_kvcache,
         )
-        hidden = residual + hidden
-
-        residual = hidden
-        hidden = self.post_attention_layernorm(hidden)
-        hidden = self.mlp(hidden)
-        return residual + hidden
+        return self._paged_decode_ops.post_attention(
+            attention_output,
+            residual,
+            self.self_attn.o_proj.weight,
+            self.post_attention_layernorm.weight,
+            self.mlp.gate_proj.weight,
+            self.mlp.up_proj.weight,
+            self.mlp.down_proj.weight,
+            self._rms_norm_eps,
+        )
 
 
 # ── Full model ──────────────────────────────────────────────────────────
