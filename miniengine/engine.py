@@ -96,6 +96,7 @@ class Engine:
             device=self.device,
         )
         self.model.eval()
+        self.model.set_paged_decode_ops(build_paged_decode_ops(engine_config.compile))
 
         # The preserved M1 baseline must not reserve paged KV memory: doing so
         # would reduce its usable batch capacity and invalidate comparisons.
