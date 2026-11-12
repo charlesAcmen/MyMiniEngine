@@ -67,6 +67,12 @@ class PagedDecodeCompilationTests(unittest.TestCase):
 
         torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
 
+    def test_eager_decode_ops_are_shared(self) -> None:
+        first = TransformerBlock(self.config)
+        second = TransformerBlock(self.config)
+
+        self.assertIs(first._paged_decode_ops, second._paged_decode_ops)
+
     def test_compiled_callables_preserve_eager_results(self) -> None:
         eager = build_paged_decode_ops(CompileConfig())
         compiled = build_paged_decode_ops(
