@@ -8,14 +8,9 @@ The engine is a "black box" that the scheduler calls into.  It handles:
   4. Decode  (previous token + KV cache → next token + updated KV cache)
   5. Token sampling (delegated to sampler.py)
 
-Design note:
-  The current API is single-request (prefill / decode_step).  A natural
-  first optimisation is to add batched versions that pad sequences and run
-  multiple requests through a single forward pass.
-
-  For tensor parallelism, the bare-bone nn.Linear layers in model.py can
-  be sharded directly: Q/K/V/gate/up column-wise, O/down row-wise, with
-  an all-reduce after the row-parallel matmul.
+For tensor parallelism, the bare-bone nn.Linear layers in model.py can be
+sharded directly: Q/K/V/gate/up column-wise, O/down row-wise, with an
+all-reduce after the row-parallel matmul.
 """
 
 from __future__ import annotations
