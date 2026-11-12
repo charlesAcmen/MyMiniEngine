@@ -434,6 +434,12 @@ class TransformerBlock(nn.Module):
         self.mlp = MLP(config)
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self._paged_decode_ops = EAGER_PAGED_DECODE_OPS
+        self._rms_norm_eps = config.rms_norm_eps
+
+    def set_paged_decode_ops(self, ops: PagedDecodeOps) -> None:
+        """Install eager or compiled tensor regions before serving starts."""
+        self._paged_decode_ops = ops
 
     def forward(
         self,
@@ -674,6 +680,16 @@ class CausalLM(nn.Module):
         self.model = TransformerModel(config)
         if not config.tie_word_embeddings:
             self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+    def set_paged_attention_ops(self, ops: PagedAttentionOps) -> None:
+        """Install one shared paged backend on every attention layer."""
+        for layer in self.model.layers:
+            layer.self_attn.set_paged_ops(ops)
+
+    def set_paged_decode_ops(self, ops: PagedDecodeOps) -> None:
+        """Install one shared tensor execution policy on every layer."""
+        for layer in self.model.layers:
+            layer.set_paged_decode_ops(ops)
 
     def forward(
         self,
