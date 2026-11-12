@@ -312,7 +312,6 @@ class Engine:
                 packed.slot_mapping,
                 packed.cu_seqlens,
                 packed.max_seqlen,
-                self.flash_attn_varlen_func,
             )
             commit_prefill(requests)
 
