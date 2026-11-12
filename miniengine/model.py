@@ -25,8 +25,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from miniengine.compilation import PagedDecodeOps, build_paged_decode_ops
-from miniengine.config import CompileConfig
+from miniengine.compilation import EAGER_PAGED_DECODE_OPS, PagedDecodeOps
+from miniengine.functional import (
+    apply_rotary_emb as _apply_rotary_emb,
+    rms_norm,
+    swiglu_mlp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +98,7 @@ class RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
+        return rms_norm(x, self.weight, self.eps)
 
 
 class RotaryEmbedding(nn.Module):
@@ -147,16 +151,6 @@ class RotaryEmbedding(nn.Module):
         return cos, sin
 
 
-def _rotate_half(x: torch.Tensor) -> torch.Tensor:
-    """Rotate the second half of the last dimension."""
-    x1, x2 = x.chunk(2, dim=-1)
-    # x'=xcos(theta)-ysin(theta)
-    # y'=xsin(theta)+ycos(theta)
-
-    #[x y]T cos(theta)+[-y x]T sin(theta)
-    return torch.cat([-x2, x1], dim=-1)
-
-
 def apply_rotary_emb(
     x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
 ) -> torch.Tensor:
@@ -171,7 +165,7 @@ def apply_rotary_emb(
     """
     cos = cos.transpose(1, 2)  # → (batch, 1, seq_len, head_dim)
     sin = sin.transpose(1, 2)
-    return x * cos + _rotate_half(x) * sin
+    return _apply_rotary_emb(x, cos, sin)
 
 
 # ── Attention ───────────────────────────────────────────────────────────
@@ -420,7 +414,12 @@ class MLP(nn.Module):
         self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+        return swiglu_mlp(
+            x,
+            self.gate_proj.weight,
+            self.up_proj.weight,
+            self.down_proj.weight,
+        )
 
 
 # ── Transformer block ──────────────────────────────────────────────────
