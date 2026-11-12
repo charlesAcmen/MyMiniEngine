@@ -52,3 +52,10 @@ def positive_int_csv(raw: str) -> list[int]:
     if len(values) != len(set(values)):
         raise argparse.ArgumentTypeError("must not contain duplicate integers")
     return values
+
+
+def increasing_positive_int_csv(raw: str) -> tuple[int, ...]:
+    values = positive_int_csv(raw)
+    if values != sorted(values):
+        raise argparse.ArgumentTypeError("must be strictly increasing")
+    return tuple(values)
