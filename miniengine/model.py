@@ -350,9 +350,9 @@ class Attention(nn.Module):
 
     def forward_paged_decode(
         self,
-        hidden: torch.Tensor,
-        cos: torch.Tensor,
-        sin: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
         k_cache: torch.Tensor,
         v_cache: torch.Tensor,
         cache_seqlens: torch.Tensor,
@@ -360,40 +360,51 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         """Append one token per request and attend through physical pages.
 
-        Input and output shapes are ``(batch, 1, hidden_size)``. The FA kernel
-        writes ``k`` and ``v`` in place at each pre-append ``cache_seqlens``
-        position and reads older tokens through ``block_table``.
+        Inputs are ``(batch, 1, heads, head_dim)``. The FA kernel writes
+        ``k`` and ``v`` in place at each pre-append ``cache_seqlens`` position
+        and reads older tokens through ``block_table``.
         """
         #[total_tokens, hidden_size] → [batch, 1, hidden_size]
-        batch_size, query_len, _ = hidden.shape
-        q = self.q_proj(hidden).view(
-            batch_size, query_len, self.num_heads, self.head_dim
-        ).transpose(1, 2)
-        k = self.k_proj(hidden).view(
-            batch_size, query_len, self.num_kv_heads, self.head_dim
-        ).transpose(1, 2)
-        v = self.v_proj(hidden).view(
-            batch_size, query_len, self.num_kv_heads, self.head_dim
-        ).transpose(1, 2)
+        # batch_size, query_len, _ = hidden.shape
+        # q = self.q_proj(hidden).view(
+        #     batch_size, query_len, self.num_heads, self.head_dim
+        # ).transpose(1, 2)
+        # k = self.k_proj(hidden).view(
+        #     batch_size, query_len, self.num_kv_heads, self.head_dim
+        # ).transpose(1, 2)
+        # v = self.v_proj(hidden).view(
+        #     batch_size, query_len, self.num_kv_heads, self.head_dim
+        # ).transpose(1, 2)
 
-        q = apply_rotary_emb(self.q_norm(q), cos, sin)
-        k = apply_rotary_emb(self.k_norm(k), cos, sin)
+        # q = apply_rotary_emb(self.q_norm(q), cos, sin)
+        # k = apply_rotary_emb(self.k_norm(k), cos, sin)
 
-        q_decode = q.transpose(1, 2).contiguous()
-        k_decode = k.transpose(1, 2).contiguous()
-        v_decode = v.transpose(1, 2).contiguous()
-        out = flash_attn_with_kvcache(
-            q_decode,
+        # q_decode = q.transpose(1, 2).contiguous()
+        # k_decode = k.transpose(1, 2).contiguous()
+        # v_decode = v.transpose(1, 2).contiguous()
+        # out = flash_attn_with_kvcache(
+        #     q_decode,
+        #     k_cache,
+        #     v_cache,
+        #     k=k_decode,
+        #     v=v_decode,
+        #     cache_seqlens=cache_seqlens,
+        #     block_table=block_table,
+        #     causal=True,
+        # )
+        # out = out.reshape(batch_size, query_len, self.num_heads * self.head_dim)
+        # return self.o_proj(out)
+        out = self._require_paged_ops().decode(
+            q,
             k_cache,
             v_cache,
-            k=k_decode,
-            v=v_decode,
+            k=k,
+            v=v,
             cache_seqlens=cache_seqlens,
             block_table=block_table,
             causal=True,
         )
-        out = out.reshape(batch_size, query_len, self.num_heads * self.head_dim)
-        return self.o_proj(out)
+        return out
 
 
 # ── MLP ─────────────────────────────────────────────────────────────────
