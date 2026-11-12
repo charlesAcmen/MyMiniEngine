@@ -23,9 +23,18 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer
 
-from miniengine.core import Request, SamplingConfig
+from miniengine.compilation import build_paged_decode_ops
+from miniengine.config import EngineConfig, SamplingConfig
+from miniengine.core import Request
+from miniengine.cuda_graph import CudaGraphRunner
 from miniengine.kv_memory_pool import KVMemoryPool
-from miniengine.model import CausalLM, ModelConfig, load_weights, require_local_model_dir
+from miniengine.model import (
+    CausalLM,
+    ModelConfig,
+    PagedAttentionOps,
+    load_weights,
+    require_local_model_dir,
+)
 from miniengine.paged_attention import (
     allocate_prefill_pages,
     build_packed_prefill,
@@ -41,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 
 class Engine:
-    """Bare-bone model wrapper for single-request prefill and decode."""
+    """Model-serving wrapper for prefill, decode, and sampling."""
 
     def __init__(
         self,
@@ -79,8 +88,13 @@ class Engine:
             model_config.tie_word_embeddings,
         )
 
-        self.model = CausalLM(config)
-        load_weights(self.model, str(local_model_path), dtype=dtype, device=device)
+        self.model = CausalLM(model_config)
+        load_weights(
+            self.model,
+            str(local_model_path),
+            dtype=self.dtype,
+            device=self.device,
+        )
         self.model.eval()
 
         # The preserved M1 baseline must not reserve paged KV memory: doing so
@@ -298,6 +312,8 @@ class Engine:
 
         try:
             #allocate + build + forward + commit collectively constitute as a transaction
+            # Page allocation and model writes become request-visible only
+            # after every layer has completed successfully.
             allocate_prefill_pages(requests, pool)
             packed = build_packed_prefill(requests, pool)
             logits = self.model.forward_paged_prefill(
@@ -391,7 +407,7 @@ class Engine:
                 pool.free(newly_allocated)
                 del request.page_table[original_count:]
             raise
-        #transaction
+        # Commit lengths only after every layer has appended successfully.
         commit_decode_batch(requests)
         return sample_batch(
             logits[:, -1, :],
