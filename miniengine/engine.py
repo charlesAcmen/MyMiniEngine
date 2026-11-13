@@ -118,6 +118,15 @@ class Engine:
             
 
         # Bind the serving strategy once at construction. Scheduler code calls
+        if engine_config.cuda_graph.enabled:
+                        self.cuda_graph_runner = CudaGraphRunner(
+                            model=self.model,
+                            kv_caches=self.kv_pool.kv_caches,
+                            batch_sizes=engine_config.cuda_graph.batch_sizes,
+                            page_size=engine_config.page_size,
+                            max_model_len=model_config.max_position_embeddings,
+                            device=self.device,
+                        )
         # these stable interfaces without branching on the mode in its hot loop.
         # The named baseline and paged methods remain public for direct tests
         # and side-by-side learning comparisons.
