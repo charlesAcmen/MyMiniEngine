@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import logging
 
-import torch
 import uvicorn
 
 from miniengine.cli import (
@@ -81,7 +80,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="PATH",
         help="JSON file containing the server-wide token sampling policy",
     )
-    return p.parse_args(argv)
+    p.add_argument(
+        "--torch-compile",
+        action="store_true",
+        help="Compile stable paged-decode tensor regions with TorchInductor",
+    )
+    p.add_argument(
+        "--cuda-graph",
+        action="store_true",
+        help="Replay paged decode through fixed-size manual CUDA graphs",
+    )
+    p.add_argument(
+        "--cuda-graph-batch-sizes",
+        type=increasing_positive_int_csv,
+        default=(1, 2, 4, 8, 16, 32),
+        metavar="SIZES",
+        help="Strictly increasing CUDA graph batch buckets",
+    )
+    args = p.parse_args(argv)
+    try:
+        args.engine_config = EngineConfig(
+            mode=args.mode,
+            dtype=args.dtype,
+            device=args.device,
+            page_size=args.page_size,
+            mem_fraction_static=args.mem_fraction_static,
+            compile=CompileConfig(enabled=args.torch_compile),
+            cuda_graph=CudaGraphConfig(
+                enabled=args.cuda_graph,
+                batch_sizes=args.cuda_graph_batch_sizes,
+            ),
+        )
+    except ValueError as exc:
+        p.error(str(exc))
+    if args.cuda_graph and max(args.cuda_graph_batch_sizes) < args.max_running:
+        p.error("largest CUDA graph batch size must cover --max-running")
+    return args
 
 
 def main() -> None:

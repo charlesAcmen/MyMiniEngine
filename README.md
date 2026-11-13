@@ -59,6 +59,18 @@ python -m miniengine --model models/Qwen3-0.6B --mode batched --dtype bfloat16
 python -m miniengine --model models/Qwen3-0.6B --mode paged \
   --dtype bfloat16 --page-size 256 \
   --sampling-config configs/sampling-greedy.json
+
+# Milestone 2 Part C (compiled decode tensor regions).
+python -m miniengine --model models/Qwen3-0.6B --mode paged \
+  --dtype bfloat16 --page-size 256 --mem-fraction-static 0.60 \
+  --sampling-config configs/sampling-greedy.json --torch-compile
+
+# Part C extra credit (manual CUDA graph buckets; sampling stays outside).
+python -m miniengine --model models/Qwen3-0.6B --mode paged \
+  --dtype bfloat16 --page-size 256 --mem-fraction-static 0.60 \
+  --sampling-config configs/sampling-greedy.json \
+  --torch-compile --cuda-graph \
+  --cuda-graph-batch-sizes 1,2,4,8,16,32
 ```
 
 Sampling is one immutable server-wide policy loaded at startup. Requests may
