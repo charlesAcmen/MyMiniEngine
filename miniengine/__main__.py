@@ -63,7 +63,13 @@ def main() -> None:
 
     logger.info("Starting server on %s:%d", args.host, args.port)
     try:
-        uvicorn.run(srv.app, host=args.host, port=args.port, log_level="info")
+        uvicorn.run(
+            srv.app,
+            host=args.host,
+            port=args.port,
+            log_level="info",
+            access_log=False,
+        )
     finally:
         sched.stop()
 
