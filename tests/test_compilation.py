@@ -76,7 +76,7 @@ class PagedDecodeCompilationTests(unittest.TestCase):
     def test_compiled_callables_preserve_eager_results(self) -> None:
         eager = build_paged_decode_ops(CompileConfig())
         compiled = build_paged_decode_ops(
-            CompileConfig(enabled=True, backend="eager", mode="default")
+            CompileConfig(enabled=True, backend="eager")
         )
         block = TransformerBlock(self.config).eval()
         hidden = torch.randn(2, 1, self.config.hidden_size)

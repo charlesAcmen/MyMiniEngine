@@ -78,7 +78,6 @@ class CompileConfig:
     enabled: bool = False
     #func via TorchDynamo->FX graph via TorchInductor->triton/CUDA kernels
     backend: str = "inductor"
-    mode: str = "default"
     #true:fallback to eager is not allowed(FA is excluded,so fullgraph is allowed to enable here)
     fullgraph: bool = True
     #decode batch size changes in continuous batching
