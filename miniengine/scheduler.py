@@ -61,6 +61,9 @@ class Scheduler:
         # Queues
         self.waiting: deque[Request] = deque()
         self.running: list[Request] = []
+        # Registry includes waiting, running, and requests temporarily held in
+        # local step variables, so a step failure can terminate every waiter.
+        self._requests: dict[str, Request] = {}
 
         # Thread control
         self._lock = threading.Lock()
@@ -69,6 +72,7 @@ class Scheduler:
 
         # Stats
         self.total_finished: int = 0
+        self.total_failed: int = 0
         self.total_generated_tokens: int = 0
 
     # ── Public API (thread-safe) ────────────────────────────────────────
@@ -76,6 +80,9 @@ class Scheduler:
     def add_request(self, request: Request) -> None:
         """Enqueue a request for scheduling."""
         with self._lock:
+            if request.request_id in self._requests:
+                raise ValueError(f"duplicate request id: {request.request_id}")
+            self._requests[request.request_id] = request
             self.waiting.append(request)
             logger.info(
                 "Enqueued request %s  (prompt_len=%d, waiting=%d)",
@@ -108,8 +115,12 @@ class Scheduler:
                 continue
             try:
                 self._step_impl()
-            except Exception:
-                logger.exception("Scheduler step failed")
+            except Exception as exc:
+                logger.exception(
+                    "Scheduler step failed; failing %d outstanding request(s)",
+                    len(self._requests),
+                )
+                self._fail_outstanding_requests(exc)
 
     # ── Scheduling step ─────────────────────────────────────────────────
 
@@ -373,6 +384,9 @@ class Scheduler:
         req.token_queue.put(TokenOutput(token_id=-1, token_text="", finished=True))
         finished_list.append(req)
 
+        with self._lock:
+            self._requests.pop(req.request_id, None)
+
         self.total_finished += 1
         self.total_generated_tokens += req.num_output_tokens
         logger.info(
@@ -382,3 +396,36 @@ class Scheduler:
             len(self.running),
             len(self.waiting),
         )
+
+    def _fail_outstanding_requests(self, exc: Exception) -> None:
+        """Fail all requests owned by the step that raised, exactly once.
+
+        The registry also covers requests temporarily removed from ``waiting``
+        during admission. Clearing all outstanding work is deliberately
+        fail-stop: retrying an unchanged CUDA or model failure would otherwise
+        spin, flood logs, and leave HTTP clients blocked forever.
+        """
+        message = f"{type(exc).__name__}: {exc}"[:2000]
+        with self._lock:
+            requests = list(self._requests.values())
+            self._requests.clear()
+            self.waiting.clear()
+            self.running = []
+
+        for request in requests:
+            try:
+                self.engine.release_request(request)
+            except Exception:
+                logger.exception(
+                    "Failed to release resources for request %s",
+                    request.request_id,
+                )
+            request.status = RequestStatus.FAILED
+            request.token_queue.put(
+                TokenOutput(
+                    token_id=-1,
+                    finished=True,
+                    error=message,
+                )
+            )
+        self.total_failed += len(requests)

@@ -22,6 +22,7 @@ class RequestStatus(Enum):
     WAITING = auto()  # Queued, not yet scheduled
     RUNNING = auto()  # Actively being prefilled or decoded
     FINISHED = auto()  # Generation complete
+    FAILED = auto()  # Terminal engine or scheduler failure
 
 
 @dataclass
@@ -29,7 +30,7 @@ class Request:
     """
     A single generation request flowing through the engine.
 
-    The scheduler moves requests through WAITING → RUNNING → FINISHED.
+    The scheduler moves requests through WAITING → RUNNING → FINISHED/FAILED.
     During RUNNING, the engine fills output_ids one token at a time and
     pushes TokenOutput objects into token_queue for streaming.
     """
