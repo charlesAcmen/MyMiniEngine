@@ -232,7 +232,9 @@ class Engine:
 
     def decode_token(self, token_id: int) -> str:
         """Decode a single token id back to a string."""
-        return self.tokenizer.decode([token_id], skip_special_tokens=True)
+        return self.tokenizer.decode([token_id], skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
 
     def validate_decode_admission(self, request: Request) -> None:
         """Validate the compact-KV invariant once before batched decode.
