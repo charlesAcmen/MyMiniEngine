@@ -309,8 +309,9 @@ async def send_request(
                         metrics.num_output_tokens = completion_tokens
                         received_usage = True
 
-    except Exception as e:
-        metrics.error = str(e)
+    except Exception as exc:
+        detail = str(exc) or type(exc).__name__
+        metrics.error = f"{type(exc).__name__}: {detail}"
 
     metrics.end_time = time.perf_counter()
     if metrics.error is None and not received_usage:
