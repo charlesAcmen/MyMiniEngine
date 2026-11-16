@@ -73,8 +73,13 @@ class Request:
 
 @dataclass
 class TokenOutput:
-    """One streamed token pushed from the scheduler to the server."""
+    """One token id or terminal failure sent to the HTTP layer.
+
+    Text decoding belongs to the HTTP consumer because one Unicode character
+    may span multiple model tokens. The scheduler therefore never publishes a
+    per-token text fragment.
+    """
 
     token_id: int
-    token_text: str
     finished: bool
+    error: str | None = None
