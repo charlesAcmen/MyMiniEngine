@@ -196,6 +196,8 @@ async def _collect_full_response(req: Request, response_engine: Engine) -> str:
         output: TokenOutput = await loop.run_in_executor(
             None, req.token_queue.get
         )
+        if output.error is not None:
+            raise HTTPException(status_code=500, detail=output.error)
         if output.finished:
             break
         parts.append(output.token_text)
