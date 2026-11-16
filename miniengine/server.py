@@ -153,6 +153,17 @@ async def _stream_response(
         output: TokenOutput = await loop.run_in_executor(
             None, req.token_queue.get
         )
+        if output.error is not None:
+            error = {
+                "error": {
+                    "message": output.error,
+                    "type": "server_error",
+                    "request_id": req.request_id,
+                }
+            }
+            yield f"data: {json.dumps(error)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
         if output.finished:
             chunk = _make_stream_chunk(
                 req.request_id,
