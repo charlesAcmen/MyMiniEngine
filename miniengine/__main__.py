@@ -8,8 +8,9 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
+import json
 import logging
+from dataclasses import asdict
 
 import uvicorn
 
@@ -29,7 +30,21 @@ def main() -> None:
     )
     logger = logging.getLogger("miniengine")
 
-    logger.info("Initializing engine  model=%s  dtype=%s", args.model, args.dtype)
+    server_config = {
+        "model": args.model,
+        "host": args.host,
+        "port": args.port,
+        "max_running": args.max_running,
+    }
+    logger.info("Server config: %s", json.dumps(server_config, sort_keys=True))
+    logger.info(
+        "Engine config: %s",
+        json.dumps(asdict(args.engine_config), sort_keys=True),
+    )
+    logger.info(
+        "Sampling config: %s",
+        json.dumps(asdict(args.sampling_config), sort_keys=True),
+    )
 
     engine = Engine(
         model_path=args.model,
