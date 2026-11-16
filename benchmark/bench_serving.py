@@ -278,8 +278,10 @@ async def send_request(
             f"{base_url}/v1/chat/completions", json=payload,
         ) as resp:
             if resp.status != 200:
-                metrics.error = f"HTTP {resp.status}"
-                metrics.end_time = time.perf_counter()
+                body = " ".join((await resp.text()).split())
+                detail = f": {body[:500]}" if body else ""
+                metrics.error = f"HTTP {resp.status}{detail}"
+                metrics.end_time = time.perf_counter()count and show errors in serving benchmark
                 return metrics
 
             async for line in resp.content:
