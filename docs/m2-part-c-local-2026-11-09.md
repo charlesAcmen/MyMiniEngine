@@ -124,3 +124,61 @@ this local Part C acceptance.
 Raw formal JSON is under `outputs/2026-11-09/`. Server logs, warmup logs,
 formal console logs, and per-run GPU CSV telemetry are under
 `outputs/2026-11-09-partc-mem060/`.
+
+## Full accuracy follow-up — 2026-11-16
+
+The original Part C acceptance ran the two-sample MMLU accuracy smoke through
+the Part B regression gate, but its formal collection compared performance
+only. This follow-up runs both README accuracy datasets across the three Part C
+execution modes on the same local Qwen3-0.6B model and RTX 3060 12GB.
+
+All conditions used paged KV, BF16, a 256-token page, a 0.60 static-memory
+fraction, a maximum running batch of 16, the server-wide greedy configuration,
+and client concurrency 16. MMLU used 200 fixed shuffled samples with a
+32-token output limit. GSM8K used 100 fixed shuffled samples with a 512-token
+output limit. The recorded comparison ran while the tracked Git state stayed
+fixed at `609da85` with tracked-diff hash
+`555975fe9433988025a5c9248aefdc8b38ab13bc735db2788184aeed4ca69b85`.
+
+| Execution mode | MMLU-200 | GSM8K-100 | Successful requests |
+|---|---:|---:|---:|
+| Paged eager | 74/200 = 37.0% | 12/100 = 12.0% | 300/300 |
+| Torch compile | 72/200 = 36.0% | 14/100 = 14.0% | 300/300 |
+| CUDA Graph | 72/200 = 36.0% | 15/100 = 15.0% | 300/300 |
+
+All 900 requests completed. The server logs contain no traceback, exception,
+request failure, or CUDA OOM. `scripts/check_part_b.sh` also passed on the
+working tree before the formal collection, covering unit tests, Python
+compilation, paged serving smoke, and the MMLU accuracy smoke.
+
+The result supports the intended accuracy-preservation claim: neither compiled
+execution nor CUDA Graph replay caused a systematic accuracy regression.
+Compile and graph produced the same MMLU score and identical values for every
+uniquely matched stored sample. Eager differed by two correct answers out of
+200. The benchmark stores only the first 80 prompt characters, so 11 MMLU rows
+with colliding truncated keys cannot be paired uniquely after completion-order
+reordering; the aggregate includes all 200 rows.
+
+GSM8K output text is not token-for-token identical across modes. Long greedy
+generation can diverge after a small BF16 logit-ordering change, and the
+benchmark's parsed numeric predictions therefore differ more often than the
+final correctness labels. Correctness changed on only a few questions and did
+not decrease for compile or graph. These results establish comparable task
+accuracy, not exact numerical or decoded-text parity. Average request latency
+from this accuracy client is retained in the JSON but is not used as Part C
+performance evidence; the controlled serving benchmark above remains the
+performance result.
+
+The fixed-run JSON reports are:
+
+- `outputs/2026-11-16/accuracy-mmlu-n200-c16-r04.json` (eager)
+- `outputs/2026-11-16/accuracy-mmlu-n200-c16-r05.json` (compile)
+- `outputs/2026-11-16/accuracy-mmlu-n200-c16-r06.json` (CUDA Graph)
+- `outputs/2026-11-16/accuracy-gsm8k-n100-c16-r04.json` (eager)
+- `outputs/2026-11-16/accuracy-gsm8k-n100-c16-r05.json` (compile)
+- `outputs/2026-11-16/accuracy-gsm8k-n100-c16-r06.json` (CUDA Graph)
+
+Reproduction commands, client logs, server logs, and the comparison helper are
+under `outputs/2026-11-16-partc-accuracy/`. The earlier unsynchronized
+collection in the same date directory is preserved as raw evidence but is not
+used for the fixed-version table above.
