@@ -163,6 +163,34 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         self.assertEqual(scheduler.total_finished, 1)
         self.assertEqual(scheduler.total_generated_tokens, 2)
 
+    def test_step_failure_fails_all_outstanding_requests_once(self) -> None:
+        engine = FakeEngine(
+            prefill_tokens={"running": 10, "waiting": 20},
+            decode_tokens={"running": [], "waiting": []},
+        )
+        scheduler = Scheduler(engine, max_running=2)
+        running = self._request("running")
+        waiting = self._request("waiting")
+        scheduler.add_request(running)
+        scheduler.add_request(waiting)
+
+        scheduler.waiting.popleft()
+        running.status = RequestStatus.RUNNING
+        running.kv_cache = object()
+        scheduler.running.append(running)
+        scheduler._fail_outstanding_requests(RuntimeError("kernel failed"))
+
+        self.assertEqual(running.status, RequestStatus.FAILED)
+        self.assertEqual(waiting.status, RequestStatus.FAILED)
+        self.assertIsNone(running.kv_cache)
+        self.assertEqual(list(scheduler.waiting), [])
+        self.assertEqual(scheduler.running, [])
+        self.assertEqual(scheduler.total_failed, 2)
+        for request in (running, waiting):
+            terminal = request.token_queue.get_nowait()
+            self.assertTrue(terminal.finished)
+            self.assertEqual(terminal.error, "RuntimeError: kernel failed")
+
     def test_prefill_stop_finishes_without_entering_batched_decode(self) -> None:
         engine = FakeEngine(
             prefill_tokens={"stop": 99},
