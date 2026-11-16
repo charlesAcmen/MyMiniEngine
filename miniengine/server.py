@@ -40,6 +40,13 @@ engine: Engine | None = None
 scheduler: Scheduler | None = None
 model_id: str = "unknown"
 
+
+def _require_runtime() -> tuple[Engine, Scheduler]:
+    """Return the initialized serving runtime or reject premature traffic."""
+    if engine is None or scheduler is None:
+        raise HTTPException(status_code=503, detail="service is not initialized")
+    return engine, scheduler
+
 # ── Request / Response schemas (OpenAI-compatible subset) ───────────────
 
 
@@ -87,9 +94,9 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
-    assert engine is not None and scheduler is not None
-    engine_config = asdict(engine.config)
-    engine_config["max_running"] = scheduler.max_running
+    current_engine, current_scheduler = _require_runtime()
+    engine_config = asdict(current_engine.config)
+    engine_config["max_running"] = current_scheduler.max_running
     return {
         "object": "list",
         "data": [
@@ -97,7 +104,7 @@ async def list_models():
                 "id": model_id,
                 "object": "model",
                 "owned_by": "miniengine",
-                "sampling_config": asdict(engine.sampling_config),
+                "sampling_config": asdict(current_engine.sampling_config),
                 "engine_config": engine_config,
             }
         ],
@@ -106,12 +113,12 @@ async def list_models():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(raw: ChatCompletionRequest):
-    assert engine is not None and scheduler is not None
-    validate_sampling_overrides(raw, engine.sampling_config)
+    current_engine, current_scheduler = _require_runtime()
+    validate_sampling_overrides(raw, current_engine.sampling_config)
 
     # Tokenize the conversation using the model's chat template
     messages = [{"role": m.role, "content": m.content} for m in raw.messages]
-    input_ids = engine.tokenize_messages(messages)
+    input_ids = current_engine.tokenize_messages(messages)
 
     req = Request(
         request_id=str(uuid.uuid4()),
@@ -119,16 +126,16 @@ async def chat_completions(raw: ChatCompletionRequest):
         max_new_tokens=raw.max_tokens if raw.max_tokens is not None else 256,
         ignore_eos=raw.ignore_eos,
     )
-    scheduler.add_request(req)
+    current_scheduler.add_request(req)
 
     if raw.stream:
         return StreamingResponse(
-            _stream_response(req, raw.model or model_id),
+            _stream_response(req, raw.model or model_id, current_engine),
             media_type="text/event-stream",
         )
 
     # Non-streaming: collect full response
-    full_text = await _collect_full_response(req)
+    full_text = await _collect_full_response(req, current_engine)
     return _make_completion_response(req, raw.model or model_id, full_text)
 
 
@@ -136,7 +143,7 @@ async def chat_completions(raw: ChatCompletionRequest):
 
 
 async def _stream_response(
-    req: Request, model: str
+    req: Request, model: str, response_engine: Engine
 ) -> AsyncGenerator[str, None]:
     """Yield SSE chunks as tokens arrive from the scheduler."""
     loop = asyncio.get_event_loop()
@@ -159,7 +166,7 @@ async def _stream_response(
         yield f"data: {json.dumps(chunk)}\n\n"
 
 
-async def _collect_full_response(req: Request) -> str:
+async def _collect_full_response(req: Request, response_engine: Engine) -> str:
     """Block until the request finishes and return the full text."""
     loop = asyncio.get_event_loop()
     parts: list[str] = []
