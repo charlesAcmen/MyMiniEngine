@@ -12,6 +12,9 @@ It runs in a background thread, repeatedly calling step() which:
   2. Runs one decode step on every running request
   3. Retires finished requests                    (RUNNING → FINISHED)
 
+An unrecoverable step exception fails all outstanding requests once and
+notifies their HTTP waiters instead of retrying the same broken step forever.
+
 """
 
 from __future__ import annotations
