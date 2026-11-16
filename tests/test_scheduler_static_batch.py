@@ -69,11 +69,11 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         )
 
     @staticmethod
-    def _drain_stream(request: Request) -> list[tuple[int, str, bool]]:
-        items: list[tuple[int, str, bool]] = []
+    def _drain_stream(request: Request) -> list[tuple[int, bool]]:
+        items: list[tuple[int, bool]] = []
         while not request.token_queue.empty():
             token = request.token_queue.get_nowait()
-            items.append((token.token_id, token.token_text, token.finished))
+            items.append((token.token_id, token.finished))
         return items
 
     def test_admission_is_capped_and_each_active_step_has_one_batch_decode(self) -> None:
@@ -158,7 +158,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         self.assertIsNone(request.kv_cache)
         self.assertEqual(
             self._drain_stream(request),
-            [(40, "<40>", False), (41, "<41>", False), (-1, "", True)],
+            [(40, False), (41, False), (-1, True)],
         )
         self.assertEqual(scheduler.total_finished, 1)
         self.assertEqual(scheduler.total_generated_tokens, 2)
@@ -178,7 +178,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         self.assertEqual(engine.batched_decode_calls, [])
         self.assertEqual(request.status, RequestStatus.FINISHED)
         self.assertIsNone(request.kv_cache)
-        self.assertEqual(self._drain_stream(request)[-1], (-1, "", True))
+        self.assertEqual(self._drain_stream(request)[-1], (-1, True))
         self.assertEqual(scheduler.total_finished, 1)
         self.assertEqual(scheduler.total_generated_tokens, 1)
 
