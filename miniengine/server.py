@@ -191,7 +191,6 @@ async def _stream_response(
 async def _collect_full_response(req: Request, response_engine: Engine) -> str:
     """Block until the request finishes and return the full text."""
     loop = asyncio.get_event_loop()
-    parts: list[str] = []
     while True:
         output: TokenOutput = await loop.run_in_executor(
             None, req.token_queue.get
@@ -200,8 +199,7 @@ async def _collect_full_response(req: Request, response_engine: Engine) -> str:
             raise HTTPException(status_code=500, detail=output.error)
         if output.finished:
             break
-        parts.append(output.token_text)
-    return "".join(parts)
+    return response_engine.decode_tokens(req.output_ids)
 
 
 # ── Response builders ───────────────────────────────────────────────────
