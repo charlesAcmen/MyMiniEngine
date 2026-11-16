@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from miniengine.__main__ import parse_args
+from miniengine.cli import parse_args
 from miniengine.config import SamplingConfig
 from miniengine.server import (
     ChatCompletionRequest,
@@ -32,6 +32,13 @@ class ServerCliTests(unittest.TestCase):
     def test_paged_mode_is_selectable(self) -> None:
         args = parse_args(["--model", "local-model", "--mode", "paged"])
         self.assertEqual(args.mode, "paged")
+
+    def test_access_log_flag_is_not_exposed(self) -> None:
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            parse_args(["--model", "local-model", "--access-log"])
 
     def test_valid_pool_flags_are_parsed_before_engine_construction(self) -> None:
         args = parse_args(
