@@ -828,6 +828,13 @@ def load_weights(
     extra = set(state_dict.keys()) - model_keys
     for key in extra:
         del state_dict[key]
+    tied_head_key = "lm_head.weight"
+    if model.config.tie_word_embeddings and tied_head_key in extra:
+        logger.info(
+            "Using tied input/output embeddings; ignored duplicate checkpoint key: %s",
+            tied_head_key,
+        )
+        extra.remove(tied_head_key)
     if extra:
         logger.info("Skipped %d unexpected checkpoint keys", len(extra))
 
