@@ -87,7 +87,7 @@ class Scheduler:
                 raise ValueError(f"duplicate request id: {request.request_id}")
             self._requests[request.request_id] = request
             self.waiting.append(request)
-            logger.info(
+            logger.debug(
                 "Enqueued request %s  (prompt_len=%d, waiting=%d)",
                 request.request_id,
                 request.num_input_tokens,
@@ -391,7 +391,7 @@ class Scheduler:
 
         self.total_finished += 1
         self.total_generated_tokens += req.num_output_tokens
-        logger.info(
+        logger.debug(
             "Finished request %s  (output_len=%d, running=%d, waiting=%d)",
             req.request_id,
             req.num_output_tokens,
