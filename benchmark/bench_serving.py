@@ -336,7 +336,7 @@ async def run_at_concurrency(
             results.append(m)
 
     async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=600),
+        timeout=aiohttp.ClientTimeout(total=300, sock_read=120),
     ) as session:
         workers = [asyncio.create_task(worker(session)) for _ in range(concurrency)]
         await asyncio.gather(*workers)
