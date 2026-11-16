@@ -23,6 +23,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from tokenizers.decoders import DecodeStream
 
 from miniengine.config import SamplingConfig
 from miniengine.core import Request, TokenOutput
@@ -147,6 +148,7 @@ async def _stream_response(
 ) -> AsyncGenerator[str, None]:
     """Yield SSE chunks as tokens arrive from the scheduler."""
     loop = asyncio.get_event_loop()
+    decode_stream: DecodeStream | None = None
     while True:
         output: TokenOutput = await loop.run_in_executor(
             None, req.token_queue.get
@@ -162,7 +164,16 @@ async def _stream_response(
             yield f"data: {json.dumps(chunk)}\n\n"
             yield "data: [DONE]\n\n"
             return
-        chunk = _make_stream_chunk(req.request_id, model, content=output.token_text)
+        # Byte-fallback tokenizers may need several token ids before a complete
+        # Unicode fragment is available for the HTTP stream.
+        if decode_stream is None:
+            decode_stream = DecodeStream([], skip_special_tokens=True)
+        text = decode_stream.step(
+            response_engine.tokenizer._tokenizer, output.token_id
+        )
+        if text is None:
+            continue
+        chunk = _make_stream_chunk(req.request_id, model, content=text)
         yield f"data: {json.dumps(chunk)}\n\n"
 
 
