@@ -281,7 +281,7 @@ async def send_request(
                 body = " ".join((await resp.text()).split())
                 detail = f": {body[:500]}" if body else ""
                 metrics.error = f"HTTP {resp.status}{detail}"
-                metrics.end_time = time.perf_counter()count and show errors in serving benchmark
+                metrics.end_time = time.perf_counter()
                 return metrics
 
             async for line in resp.content:
@@ -293,9 +293,21 @@ async def send_request(
                     break
                 try:
                     data = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                choice = data["choices"][0]
+                except json.JSONDecodeError as exc:
+                    metrics.error = f"Malformed SSE JSON: {exc.msg}"
+                    break
+                if "error" in data:
+                    error = data["error"]
+                    message = (
+                        error.get("message") if isinstance(error, dict) else error
+                    )
+                    metrics.error = f"SSE server error: {message}"
+                    break
+                try:
+                    choice = data["choices"][0]
+                except (KeyError, IndexError, TypeError):
+                    metrics.error = "Malformed SSE payload: missing choices[0]"
+                    break
                 # A streamed item represents one sampled id today, but text is
                 # not a token counter: EOS/special ids can decode to "".
                 if choice.get("finish_reason") is None and metrics.first_token_time is None:
