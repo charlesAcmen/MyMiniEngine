@@ -230,9 +230,11 @@ class Engine:
             text = self.tokenizer.apply_chat_template(messages, **kwargs)
         return self.tokenizer.encode(text, add_special_tokens=False)
 
-    def decode_token(self, token_id: int) -> str:
-        """Decode a single token id back to a string."""
-        return self.tokenizer.decode([token_id], skip_special_tokens=True,
+    def decode_tokens(self, token_ids: list[int]) -> str:
+        """Decode one complete generated sequence into user-visible text."""
+        return self.tokenizer.decode(
+            token_ids,
+            skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )
 
