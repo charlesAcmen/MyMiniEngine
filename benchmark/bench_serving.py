@@ -473,8 +473,16 @@ def print_summary_table(all_results: dict[int, list[RequestMetrics]]):
     for conc in sorted(all_results.keys()):
         results = all_results[conc]
         ok = [r for r in results if r.error is None]
+        errors = Counter(r.error for r in results if r.error is not None)
         if not ok:
             print(f"{conc:>5}  ALL FAILED")
+            print(
+                "       Errors: "
+                + "; ".join(
+                    f"{count}x {message}"
+                    for message, count in errors.most_common()
+                )
+            )
             continue
 
         ttfts = np.array([r.ttft for r in ok if r.ttft is not None])
@@ -491,6 +499,14 @@ def print_summary_table(all_results: dict[int, list[RequestMetrics]]):
             f"{pct(tpots,50):>9.1f}  {pct(tpots,99):>9.1f}  "
             f"{gen_tps:>9.0f}  {len(ok):>4}"
         )
+        if errors:
+            print(
+                "       Errors: "
+                + "; ".join(
+                    f"{count}x {message}"
+                    for message, count in errors.most_common()
+                )
+            )
 
     print(f"{'=' * 100}")
 
