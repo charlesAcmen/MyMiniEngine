@@ -408,6 +408,11 @@ class Engine:
                 )
             else:
                 logits = self.cuda_graph_runner(decode)
+            token_ids = sample_batch(
+                logits[:, -1, :],
+                self.sampling_config,
+                [request.output_ids for request in requests],
+            )
         except Exception:
             # A failed layer may have written the uncommitted slot, but
             # kv_seq_len still hides it. Return only pages added by this call;
@@ -418,12 +423,9 @@ class Engine:
                 del request.page_table[original_count:]
             raise
         # Commit lengths only after every layer has appended successfully.
+        # Sampling must also succeed so the scheduler receives the next token.
         commit_decode_batch(requests)
-        return sample_batch(
-            logits[:, -1, :],
-            self.sampling_config,
-            [request.output_ids for request in requests],
-        )
+        return token_ids
 
     @staticmethod
     def _release_batched_request(request: Request) -> None:
