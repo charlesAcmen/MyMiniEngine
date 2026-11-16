@@ -376,9 +376,8 @@ class Scheduler:
         return False
 
     def _stream_token(self, req: Request, token_id: int) -> None:
-        """Push a generated token id into the request's streaming queue."""
-        text = self.engine.decode_token(token_id)
-        req.token_queue.put(TokenOutput(token_id=token_id, token_text=text, finished=False))
+        """Push a generated token id into the request's response queue."""
+        req.token_queue.put(TokenOutput(token_id=token_id, finished=False))
 
     def _finish_request(self, req: Request, finished_list: list[Request]) -> None:
         """Mark a request as finished and free its resources."""
