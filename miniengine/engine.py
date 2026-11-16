@@ -334,15 +334,15 @@ class Engine:
                 packed.cu_seqlens,
                 packed.max_seqlen,
             )
-            commit_prefill(requests)
-
             # The model already selected each packed segment's final hidden
             # state before the vocabulary projection, so logits is (B, V).
-            return sample_batch(
+            token_ids = sample_batch(
                 logits,
                 self.sampling_config,
                 [request.output_ids for request in requests],
             )
+            commit_prefill(requests)
+            return token_ids
         except Exception:
             for request in requests:
                 release_request_pages(request, pool)
