@@ -58,10 +58,6 @@ class FakeEngine:
     def is_stop_token(self, token_id: int) -> bool:
         return token_id in self.stop_tokens
 
-    @staticmethod
-    def decode_token(token_id: int) -> str:
-        return f"<{token_id}>"
-
 
 class StaticBatchSchedulerTest(unittest.TestCase):
     @staticmethod

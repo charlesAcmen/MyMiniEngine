@@ -70,11 +70,6 @@ class FakePagedEngine:
     def is_stop_token(token_id: int) -> bool:
         return False
 
-    @staticmethod
-    def decode_token(token_id: int) -> str:
-        return f"<{token_id}>"
-
-
 class PagedSchedulerTest(unittest.TestCase):
     @staticmethod
     def _request(request_id: str, prompt_len: int) -> Request:
