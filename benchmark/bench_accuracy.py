@@ -382,6 +382,14 @@ def main():
             else "unknown (server did not expose sampling_config)"
         )
     )
+    print(
+        "  Engine      : "
+        + (
+            json.dumps(args.engine_config, sort_keys=True)
+            if args.engine_config is not None
+            else "unknown (server did not expose engine_config)"
+        )
+    )
     print(f"{'=' * 60}\n")
 
     # Load dataset
