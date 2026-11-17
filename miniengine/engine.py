@@ -176,11 +176,12 @@ class Engine:
         """
         device = torch.device(self.device)
         try:
-            _, total_bytes = torch.accelerator.memory.get_memory_info(device)
-        except (RuntimeError, NotImplementedError) as exc:
+            # CUDA device properties are stable across NVIDIA GPU generations.
+            total_bytes = torch.cuda.get_device_properties(device).total_memory
+        except (AssertionError, RuntimeError) as exc:
             raise RuntimeError(
-                f"cannot derive a KV pool budget for {device}: its PyTorch backend "
-                "does not expose accelerator memory information"
+                f"cannot derive a KV pool budget for {device}: CUDA device properties "
+                "are unavailable"
             ) from exc
         weight_bytes = sum(
             parameter.numel() * parameter.element_size()
