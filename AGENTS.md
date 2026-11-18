@@ -1,7 +1,5 @@
 # MiniEngine Learning Contract
 
-- Work only in this ext4 checkout:
-  /home/charles/dev/MyMiniEngine.
 - origin is CharlesAcmen/MyMiniEngine. Do not rewrite history, reset, push, or
   commit unless Charles explicitly asks.
 - Stay on the independent M2 learning path. Never inspect, copy, checkout, or
