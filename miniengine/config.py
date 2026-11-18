@@ -113,6 +113,8 @@ class EngineConfig:
     device: str = "cuda"
     page_size: int = 256
     mem_fraction_static: float = 0.80
+    # Zero preserves the M2 single-shot packed-prefill path.
+    prefill_chunk_size: int = 0
     compile: CompileConfig = field(default_factory=CompileConfig)
     cuda_graph: CudaGraphConfig = field(default_factory=CudaGraphConfig)
 
@@ -125,6 +127,10 @@ class EngineConfig:
             raise ValueError("page_size must be positive")
         if not 0 < self.mem_fraction_static < 1:
             raise ValueError("mem_fraction_static must be in (0, 1)")
+        if self.prefill_chunk_size < 0:
+            raise ValueError("prefill_chunk_size must be non-negative")
+        if self.prefill_chunk_size > 0 and self.mode != "paged":
+            raise ValueError("chunked prefill is supported only in paged mode")
         if self.compile.enabled and self.mode != "paged":
             raise ValueError("torch.compile is supported only in paged mode")
         if self.compile.enabled and not self.device.startswith("cuda"):

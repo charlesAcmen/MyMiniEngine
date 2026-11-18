@@ -113,6 +113,16 @@ def build_server_parser() -> argparse.ArgumentParser:
         help="Fraction of GPU memory reserved for model weights plus the fixed KV pool",
     )
     parser.add_argument(
+        "--prefill-chunk-size",
+        type=non_negative_int,
+        default=0,
+        metavar="N",
+        help=(
+            "Maximum prefill query tokens scheduled per step; "
+            "0 preserves the M2 single-shot prefill path"
+        ),
+    )
+    parser.add_argument(
         "--sampling-config",
         type=SamplingConfig.from_json,
         default=SamplingConfig(),
@@ -150,6 +160,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             device=args.device,
             page_size=args.page_size,
             mem_fraction_static=args.mem_fraction_static,
+            prefill_chunk_size=args.prefill_chunk_size,
             compile=CompileConfig(enabled=args.torch_compile),
             cuda_graph=CudaGraphConfig(
                 enabled=args.cuda_graph,
