@@ -76,6 +76,7 @@ class Scheduler:
 
         # Thread control
         self._lock = threading.Lock()
+        self._work_available = threading.Condition(self._lock)
         self._running_flag = False
         self._thread: threading.Thread | None = None
 
@@ -88,7 +89,7 @@ class Scheduler:
 
     def add_request(self, request: Request) -> None:
         """Enqueue a request for scheduling."""
-        with self._lock:
+        with self._work_available:
             if request.request_id in self._requests:
                 raise ValueError(f"duplicate request id: {request.request_id}")
             self._requests[request.request_id] = request
@@ -99,17 +100,22 @@ class Scheduler:
                 request.num_input_tokens,
                 len(self.waiting),
             )
+            self._work_available.notify()
 
     def start(self) -> None:
         """Start the scheduler loop in a background daemon thread."""
-        self._running_flag = True
+        with self._work_available:
+            self._running_flag = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         logger.info("Scheduler started")
 
     def stop(self) -> None:
         """Signal the scheduler to stop and wait for the thread to join."""
-        self._running_flag = False
+        with self._work_available:
+            self._running_flag = False
+            # An idle scheduler may be blocked in wait_for indefinitely.
+            self._work_available.notify_all()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
         logger.info("Scheduler stopped")
@@ -117,11 +123,16 @@ class Scheduler:
     # ── Main loop ───────────────────────────────────────────────────────
 
     def _loop(self) -> None:
-        while self._running_flag:
-            has_work = bool(self.waiting) or bool(self.running)
-            if not has_work:
-                time.sleep(0.005)  # idle sleep to avoid busy-waiting
-                continue
+        while True:
+            with self._work_available:
+                self._work_available.wait_for(
+                    lambda: not self._running_flag
+                    or bool(self.waiting)
+                    or bool(self.prefilling)
+                    or bool(self.decode_ready)
+                )
+                if not self._running_flag:
+                    return
             try:
                 self._step_impl()
             except Exception as exc:
