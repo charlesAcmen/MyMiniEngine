@@ -367,7 +367,12 @@ def percentile(xs: list[float], p: float) -> float:
     return xs[min(int(p * len(xs)), len(xs) - 1)]
 
 
-def report(samples: list[Sample], workload: str, wall_time: float) -> None:
+def report(
+    samples: list[Sample],
+    workload: str,
+    wall_time: float,
+    group_labels: dict[int, str] | None = None,
+) -> None:
     if not samples:
         print("No samples!")
         return
@@ -416,7 +421,7 @@ def report(samples: list[Sample], workload: str, wall_time: float) -> None:
             by_grp.setdefault(s.turn, []).append(s)
         # Recover the group label (from PromptSpec) — passed via the
         # group_labels mapping if any; otherwise the integer id is fine.
-        labels = getattr(report, "_group_labels", None) or {}
+        labels = group_labels or {}
         if len(by_grp) > 1:
             print("\n  Per-group breakdown:")
             print(
@@ -515,7 +520,7 @@ def main() -> None:
             args.shared_prefix_len,
             args.question_len,
         )
-        report._group_labels = {p.group_id: p.group_label for p in prompts}  # type: ignore[attr-defined]
+        group_labels = {p.group_id: p.group_label for p in prompts}
         samples = asyncio.run(
             workload_shared(
                 args.base_url,
@@ -525,7 +530,7 @@ def main() -> None:
             )
         )
     else:  # multiturn
-        report._group_labels = {}  # type: ignore[attr-defined]
+        group_labels = None
         samples = asyncio.run(
             workload_multiturn(
                 args.base_url,
@@ -536,7 +541,7 @@ def main() -> None:
             )
         )
     wall_time = time.perf_counter() - t0
-    report(samples, args.workload, wall_time)
+    report(samples, args.workload, wall_time, group_labels)
 
 
 if __name__ == "__main__":
