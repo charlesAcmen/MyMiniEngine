@@ -21,12 +21,12 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from collections import deque
 
 from miniengine.config import SchedulerConfig
 from miniengine.core import Request, RequestStatus, TokenOutput
 from miniengine.engine import Engine
+from miniengine.paged_attention import PrefillChunk
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +54,16 @@ class Scheduler:
         if config.prefill_chunk_size > 0 and engine.mode != "paged":
             raise ValueError("chunked prefill is supported only in paged mode")
 
-        # Engine.mode is the single source of truth. Store the selected bound
+        # Engine.mode  and immutable prefill policy is the single source of truth. Store the selected bound
         # method once so every scheduler iteration performs a direct callable
         # invocation instead of repeating mode dispatch in the hot loop.
         step_strategies = {
             "batched": self.step_continuous_batch,
-            "paged": self.step_paged,
+            "paged": (
+                self.step_paged_chunked
+                if config.prefill_chunk_size > 0
+                else self.step_paged
+            ),
         }
         try:
             self._step_impl = step_strategies[engine.mode]
@@ -318,6 +322,7 @@ class Scheduler:
         participate in one paged decode call. Only this scheduler thread owns
         pool allocation and release, so allocator metadata needs no lock.
         """
+        # M2 baseline: the original single-shot packed-prefill path.
         finished: list[Request] = []
         admitted_requests: list[Request] = []
         pool = self.engine.kv_pool
@@ -386,6 +391,55 @@ class Scheduler:
 
         self.decode_ready = decode_survivors
         return finished
+
+    def _plan_prefill_chunks(self, pool) -> list[PrefillChunk]:
+        """Spend one prefill budget in FCFS order without mutating requests."""
+        #total token budget across all reqs
+        remaining_budget = self.config.prefill_chunk_size
+        #page budget
+        available_pages = pool.num_free
+        chunks: list[PrefillChunk] = []
+
+        #FCFS
+        for request in self.prefilling:
+            if remaining_budget == 0:
+                break
+            #num of tokens already prefilled,kv cached
+            start = request.kv_seq_len
+            #do not use output ids
+            remaining_prompt = request.num_input_tokens - start
+            if remaining_prompt <= 0:
+                raise RuntimeError(
+                    f"request {request.request_id} remained in prefill after completion"
+                )
+
+            max_storable_end = (
+                len(request.page_table) + available_pages
+            ) * pool.page_size
+            #do not use available pages*page size，which may waste tokens at the last page
+            capacity_tokens = max(0, max_storable_end - start)
+            chunk_tokens = min(
+                remaining_budget,
+                remaining_prompt,
+                capacity_tokens,
+            )
+            if chunk_tokens == 0:
+            #num_free =0
+                break
+
+            end = start + chunk_tokens
+            #plan,not real allocation in this func
+            pages_added = pool.pages_needed(end) - len(request.page_table)
+            available_pages -= pages_added
+            chunks.append(PrefillChunk(request=request, start=start, end=end))
+            remaining_budget -= chunk_tokens
+
+            # Completion-first FCFS leaves at most one partially prefilling
+            # request holding pages between scheduler iterations.
+            if end < request.num_input_tokens:
+                break
+
+        return chunks
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
