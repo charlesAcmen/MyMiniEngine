@@ -9,6 +9,7 @@ from miniengine.config import (
     CudaGraphConfig,
     EngineConfig,
     SamplingConfig,
+    validate_runtime_configs,
 )
 
 
@@ -160,15 +161,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             device=args.device,
             page_size=args.page_size,
             mem_fraction_static=args.mem_fraction_static,
-            prefill_chunk_size=args.prefill_chunk_size,
             compile=CompileConfig(enabled=args.torch_compile),
             cuda_graph=CudaGraphConfig(
                 enabled=args.cuda_graph,
                 batch_sizes=args.cuda_graph_batch_sizes,
             ),
         )
+        args.scheduler_config = SchedulerConfig(
+            max_running=args.max_running,
+            prefill_chunk_size=args.prefill_chunk_size,
+        )
+        validate_runtime_configs(args.engine_config, args.scheduler_config)
     except ValueError as exc:
         parser.error(str(exc))
-    if args.cuda_graph and max(args.cuda_graph_batch_sizes) < args.max_running:
-        parser.error("largest CUDA graph batch size must cover --max-running")
     return args

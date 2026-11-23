@@ -105,6 +105,21 @@ class CudaGraphConfig:
 
 
 @dataclass(frozen=True)
+class SchedulerConfig:
+    """Immutable admission and iteration-level scheduling policy."""
+
+    max_running: int = 16
+    # Zero preserves the M2 single-shot packed-prefill path.
+    prefill_chunk_size: int = 0
+
+    def __post_init__(self) -> None:
+        if self.max_running < 1:
+            raise ValueError("max_running must be positive")
+        if self.prefill_chunk_size < 0:
+            raise ValueError("prefill_chunk_size must be non-negative")
+
+
+@dataclass(frozen=True)
 class EngineConfig:
     """Serializable model-execution and accelerator-resource policy."""
 
@@ -113,8 +128,6 @@ class EngineConfig:
     device: str = "cuda"
     page_size: int = 256
     mem_fraction_static: float = 0.80
-    # Zero preserves the M2 single-shot packed-prefill path.
-    prefill_chunk_size: int = 0
     compile: CompileConfig = field(default_factory=CompileConfig)
     cuda_graph: CudaGraphConfig = field(default_factory=CudaGraphConfig)
 
@@ -127,13 +140,25 @@ class EngineConfig:
             raise ValueError("page_size must be positive")
         if not 0 < self.mem_fraction_static < 1:
             raise ValueError("mem_fraction_static must be in (0, 1)")
-        if self.prefill_chunk_size < 0:
-            raise ValueError("prefill_chunk_size must be non-negative")
-        if self.prefill_chunk_size > 0 and self.mode != "paged":
-            raise ValueError("chunked prefill is supported only in paged mode")
         if self.compile.enabled and self.mode != "paged":
             raise ValueError("torch.compile is supported only in paged mode")
         if self.compile.enabled and not self.device.startswith("cuda"):
             raise ValueError("torch.compile paged decode requires a CUDA device")
         if self.cuda_graph.enabled and not self.compile.enabled:
             raise ValueError("CUDA graph mode requires torch.compile")
+
+
+def validate_runtime_configs(
+    engine: EngineConfig, scheduler: SchedulerConfig
+) -> None:
+    """Reject incompatible execution and scheduling policies before startup."""
+    if scheduler.prefill_chunk_size > 0 and engine.mode != "paged":
+        raise ValueError("chunked prefill is supported only in paged mode")
+    if (
+        engine.cuda_graph.enabled
+        and max(engine.cuda_graph.batch_sizes) < scheduler.max_running
+    ):
+        raise ValueError(
+            "largest CUDA graph batch size must cover scheduler max_running: "
+            f"{max(engine.cuda_graph.batch_sizes)} < {scheduler.max_running}"
+        )
