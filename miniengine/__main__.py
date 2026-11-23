@@ -34,7 +34,6 @@ def main() -> None:
         "model": args.model,
         "host": args.host,
         "port": args.port,
-        "max_running": args.max_running,
     }
     logger.info("Server config: %s", json.dumps(server_config, sort_keys=True))
     logger.info(

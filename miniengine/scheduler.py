@@ -179,7 +179,9 @@ class Scheduler:
             with self._lock:
                 batch = [
                     self.waiting.popleft()
-                    for _ in range(min(self.max_running, len(self.waiting)))
+                    for _ in range(
+                        min(self.config.max_running, len(self.waiting))
+                    )
                 ]
 
             # Prompt lengths are ragged, so prefill keeps GPU KV ownership per request.
