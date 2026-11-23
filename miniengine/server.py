@@ -32,6 +32,26 @@ from miniengine.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
 
+@dataclass(frozen=True)
+class Runtime:
+    """One fully wired serving instance owned by the FastAPI application."""
+
+    engine: Engine
+    scheduler: Scheduler
+    model_id: str
+
+
+def _runtime_or_none(target_app: FastAPI) -> Runtime | None:
+    """Read Starlette's public state container without masking bad values."""
+    try:
+        runtime = target_app.state.runtime
+    except AttributeError:
+        return None
+    if runtime is not None and not isinstance(runtime, Runtime):
+        raise TypeError("app.state.runtime must be a Runtime instance")
+    return runtime
+
+
 # ── FastAPI app ─────────────────────────────────────────────────────────
 
 app = FastAPI(title="MiniEngine", version="0.1.0")
@@ -42,11 +62,12 @@ scheduler: Scheduler | None = None
 model_id: str = "unknown"
 
 
-def _require_runtime() -> tuple[Engine, Scheduler]:
+def _require_runtime() -> Runtime:
     """Return the initialized serving runtime or reject premature traffic."""
-    if engine is None or scheduler is None:
+    runtime: Runtime | None = getattr(app.state, "runtime", None)
+    if runtime is None:
         raise HTTPException(status_code=503, detail="service is not initialized")
-    return engine, scheduler
+    return runtime
 
 # ── Request / Response schemas (OpenAI-compatible subset) ───────────────
 
@@ -95,18 +116,17 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models():
-    current_engine, current_scheduler = _require_runtime()
-    engine_config = asdict(current_engine.config)
-    engine_config["max_running"] = current_scheduler.max_running
+    runtime = _require_runtime()
     return {
         "object": "list",
         "data": [
             {
-                "id": model_id,
+                "id": runtime.model_id,
                 "object": "model",
                 "owned_by": "miniengine",
-                "sampling_config": asdict(current_engine.sampling_config),
-                "engine_config": engine_config,
+                "sampling_config": asdict(runtime.engine.sampling_config),
+                "engine_config": asdict(runtime.engine.config),
+                "scheduler_config": asdict(runtime.scheduler.config),
             }
         ],
     }
@@ -114,12 +134,12 @@ async def list_models():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(raw: ChatCompletionRequest):
-    current_engine, current_scheduler = _require_runtime()
-    validate_sampling_overrides(raw, current_engine.sampling_config)
+    runtime = _require_runtime()
+    validate_sampling_overrides(raw, runtime.engine.sampling_config)
 
     # Tokenize the conversation using the model's chat template
     messages = [{"role": m.role, "content": m.content} for m in raw.messages]
-    input_ids = current_engine.tokenize_messages(messages)
+    input_ids = runtime.engine.tokenize_messages(messages)
 
     req = Request(
         request_id=str(uuid.uuid4()),
@@ -127,17 +147,19 @@ async def chat_completions(raw: ChatCompletionRequest):
         max_new_tokens=raw.max_tokens if raw.max_tokens is not None else 256,
         ignore_eos=raw.ignore_eos,
     )
-    current_scheduler.add_request(req)
+    runtime.scheduler.add_request(req)
 
     if raw.stream:
         return StreamingResponse(
-            _stream_response(req, raw.model or model_id, current_engine),
+            _stream_response(req, raw.model or runtime.model_id, runtime.engine),
             media_type="text/event-stream",
         )
 
     # Non-streaming: collect full response
-    full_text = await _collect_full_response(req, current_engine)
-    return _make_completion_response(req, raw.model or model_id, full_text)
+    full_text = await _collect_full_response(req, runtime.engine)
+    return _make_completion_response(
+        req, raw.model or runtime.model_id, full_text
+    )
 
 
 # ── Streaming helpers ───────────────────────────────────────────────────
