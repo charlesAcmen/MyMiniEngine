@@ -41,6 +41,10 @@ def main() -> None:
         json.dumps(asdict(args.engine_config), sort_keys=True),
     )
     logger.info(
+        "Scheduler config: %s",
+        json.dumps(asdict(args.scheduler_config), sort_keys=True),
+    )
+    logger.info(
         "Sampling config: %s",
         json.dumps(asdict(args.sampling_config), sort_keys=True),
     )
@@ -50,7 +54,7 @@ def main() -> None:
         engine_config=args.engine_config,
         sampling_config=args.sampling_config,
     )
-    sched = Scheduler(engine=engine, max_running=args.max_running)
+    sched = Scheduler(engine=engine, config=args.scheduler_config)
 
     # Wire up the server module globals
     srv.engine = engine

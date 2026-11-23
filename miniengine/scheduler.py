@@ -24,6 +24,7 @@ import threading
 import time
 from collections import deque
 
+from miniengine.config import SchedulerConfig
 from miniengine.core import Request, RequestStatus, TokenOutput
 from miniengine.engine import Engine
 
@@ -45,9 +46,13 @@ class Scheduler:
         step_continuous_batch()   — M1 Part B iteration-level batching
     """
 
-    def __init__(self, engine: Engine, max_running: int = 16):
+    def __init__(
+        self, engine: Engine, config: SchedulerConfig = SchedulerConfig()
+    ) -> None:
         self.engine = engine
-        self.max_running = max_running
+        self.config = config
+        if config.prefill_chunk_size > 0 and engine.mode != "paged":
+            raise ValueError("chunked prefill is supported only in paged mode")
 
         # Engine.mode is the single source of truth. Store the selected bound
         # method once so every scheduler iteration performs a direct callable

@@ -8,6 +8,7 @@ from miniengine.config import (
     CompileConfig,
     CudaGraphConfig,
     EngineConfig,
+    SchedulerConfig,
     SamplingConfig,
     validate_runtime_configs,
 )
