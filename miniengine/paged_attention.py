@@ -57,6 +57,22 @@ class PackedPrefill:
 
 
 @dataclass(frozen=True)
+class PrefillChunk:
+    """One contiguous prompt slice scheduled for an in-flight request."""
+
+    request: Request
+    start: int
+    end: int
+
+    @property
+    def num_tokens(self) -> int:
+        return self.end - self.start
+
+    @property
+    def completes_prompt(self) -> bool:
+        return self.end == self.request.num_input_tokens
+
+@dataclass(frozen=True)
 class PagedDecode:
     """One-token decode metadata for a heterogeneous request batch.
 
