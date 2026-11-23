@@ -459,6 +459,7 @@ def result_parameters(args) -> dict:
         "prompt_data_dir": str(args.prompt_data_dir),
         "sampling_config": getattr(args, "sampling_config", None),
         "engine_config": getattr(args, "engine_config", None),
+        "scheduler_config": getattr(args, "scheduler_config", None),
         "seed": args.seed,
     }
 
@@ -616,6 +617,7 @@ def main():
     args.model = model_id
     args.sampling_config = server_model.get("sampling_config")
     args.engine_config = server_model.get("engine_config")
+    args.scheduler_config = server_model.get("scheduler_config")
 
     try:
         validate_result_filename("serving", result_parameters(args))
@@ -649,6 +651,14 @@ def main():
             json.dumps(args.engine_config, sort_keys=True)
             if args.engine_config is not None
             else "unknown (server did not expose engine_config)"
+        )
+    )
+    print(
+        "  Scheduler    : "
+        + (
+            json.dumps(args.scheduler_config, sort_keys=True)
+            if args.scheduler_config is not None
+            else "unknown (server did not expose scheduler_config)"
         )
     )
     print(f"  Prompt data  : {args.prompt_data_dir}")

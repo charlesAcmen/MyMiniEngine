@@ -327,6 +327,7 @@ def result_parameters(args) -> dict:
         "model": getattr(args, "model", None),
         "sampling_config": getattr(args, "sampling_config", None),
         "engine_config": getattr(args, "engine_config", None),
+        "scheduler_config": getattr(args, "scheduler_config", None),
         "subjects": args.subjects,
     }
 
@@ -357,6 +358,7 @@ def main():
         args.model = server_model["id"]
         args.sampling_config = server_model.get("sampling_config")
         args.engine_config = server_model.get("engine_config")
+        args.scheduler_config = server_model.get("scheduler_config")
     except (KeyError, RuntimeError):
         print("  ERROR: Could not detect model from server.", flush=True)
         sys.exit(1)
@@ -388,6 +390,14 @@ def main():
             json.dumps(args.engine_config, sort_keys=True)
             if args.engine_config is not None
             else "unknown (server did not expose engine_config)"
+        )
+    )
+    print(
+        "  Scheduler   : "
+        + (
+            json.dumps(args.scheduler_config, sort_keys=True)
+            if args.scheduler_config is not None
+            else "unknown (server did not expose scheduler_config)"
         )
     )
     print(f"{'=' * 60}\n")
