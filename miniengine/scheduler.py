@@ -63,8 +63,9 @@ class Scheduler:
 
         # Queues
         self.waiting: deque[Request] = deque()
-        self.running: list[Request] = []
-        # Registry includes waiting, running, and requests temporarily held in
+        self.prefilling: deque[Request] = deque()
+        self.decode_ready: list[Request] = []
+        # Registry includes waiting, prefilling, decode-ready, and requests held in
         # local step variables, so a step failure can terminate every waiter.
         self._requests: dict[str, Request] = {}
 
@@ -173,7 +174,7 @@ class Scheduler:
         """
         finished: list[Request] = []
 
-        if not self.running:
+        if not self.decode_ready:
             # Static-batch admission: finished slots are intentionally not refilled.
             with self._lock:
                 batch = [
@@ -194,19 +195,19 @@ class Scheduler:
                 if self._check_finished(req, token_id):
                     self._finish_request(req, finished)
                 else:
-                    self.running.append(req)
+                    self.decode_ready.append(req)
 
             return finished
 
-        active_requests = self.running
+        active_requests = self.decode_ready
         # batched_decode uses a temporary padded KV workspace, then restores compact KV.
         token_ids = self.engine.batched_decode(active_requests)
         if len(token_ids) != len(active_requests):
             raise RuntimeError(
-                "batched_decode must return one token for every running request"
+                "batched_decode must return one token for every decode-ready request"
             )
 
-        surviving_requests: list[Request] = []
+        decode_survivors: list[Request] = []
         #active_requests[i] ↔ token_ids[i]
         for req, token_id in zip(active_requests, token_ids):
             req.output_ids.append(token_id)
@@ -215,9 +216,9 @@ class Scheduler:
             if self._check_finished(req, token_id):
                 self._finish_request(req, finished)
             else:
-                surviving_requests.append(req)
+                decode_survivors.append(req)
 
-        self.running = surviving_requests
+        self.decode_ready = decode_survivors
         return finished
 
     def step_continuous_batch(self) -> list[Request]:
@@ -235,12 +236,15 @@ class Scheduler:
         """
         finished: list[Request] = []
 
-        # A slot is free whenever no RUNNING request currently owns its KV cache.
+        # A slot is free whenever no decode-ready request owns its KV cache.
         with self._lock:
             admitted_requests = [
                 self.waiting.popleft()
                 for _ in range(
-                    min(self.max_running - len(self.running), len(self.waiting))
+                    min(
+                        self.config.max_running - len(self.decode_ready),
+                        len(self.waiting),
+                    )
                 )
             ]
 
@@ -260,21 +264,21 @@ class Scheduler:
             if self._check_finished(req, token_id):
                 self._finish_request(req, finished)
             else:
-                self.running.append(req)
+                self.decode_ready.append(req)
 
-        if not self.running:
+        if not self.decode_ready:
             return finished
 
         # The engine builds only a temporary padded GPU KV workspace for this call.
         # It restores one compact KV cache per request before returning token_ids.
-        active_requests = self.running
+        active_requests = self.decode_ready
         token_ids = self.engine.decode_batch(active_requests)
         if len(token_ids) != len(active_requests):
             raise RuntimeError(
-                "batched_decode must return one token for every running request"
+                "batched_decode must return one token for every decode-ready request"
             )
 
-        surviving_requests: list[Request] = []
+        decode_survivors: list[Request] = []
         # Request/token index alignment is the scheduler-to-engine batch invariant.
         for req, token_id in zip(active_requests, token_ids):
             req.output_ids.append(token_id)
@@ -283,9 +287,9 @@ class Scheduler:
             if self._check_finished(req, token_id):
                 self._finish_request(req, finished)
             else:
-                surviving_requests.append(req)
+                decode_survivors.append(req)
 
-        self.running = surviving_requests
+        self.decode_ready = decode_survivors
         return finished
 
     def step_paged(self) -> list[Request]:
@@ -303,7 +307,7 @@ class Scheduler:
             raise RuntimeError("paged scheduler requires Engine(mode='paged')")
 
         available_pages = pool.num_free
-        available_slots = self.max_running - len(self.running)
+        available_slots = self.config.max_running - len(self.decode_ready)
 
         # Stop at the first request that does not fit to preserve strict FCFS.
         # Later requests never bypass a large prompt at the queue head.
@@ -346,23 +350,23 @@ class Scheduler:
         if not self.running:
             return finished
 
-        active_requests = self.running
+        active_requests = self.decode_ready
         token_ids = self.engine.decode_batch(active_requests)
         if len(token_ids) != len(active_requests):
             raise RuntimeError(
-                "paged_decode must return one token for every running request"
+                "paged_decode must return one token for every decode-ready request"
             )
 
-        surviving_requests: list[Request] = []
+        decode_survivors: list[Request] = []
         for request, token_id in zip(active_requests, token_ids):
             request.output_ids.append(token_id)
             self._stream_token(request, token_id)
             if self._check_finished(request, token_id):
                 self._finish_request(request, finished)
             else:
-                surviving_requests.append(request)
+                decode_survivors.append(request)
 
-        self.running = surviving_requests
+        self.decode_ready = decode_survivors
         return finished
 
     # ── Helpers ─────────────────────────────────────────────────────────
@@ -392,10 +396,10 @@ class Scheduler:
         self.total_finished += 1
         self.total_generated_tokens += req.num_output_tokens
         logger.debug(
-            "Finished request %s  (output_len=%d, running=%d, waiting=%d)",
+            "Finished request %s  (output_len=%d, decode_ready=%d, waiting=%d)",
             req.request_id,
             req.num_output_tokens,
-            len(self.running),
+            len(self.decode_ready),
             len(self.waiting),
         )
 
@@ -412,7 +416,8 @@ class Scheduler:
             requests = list(self._requests.values())
             self._requests.clear()
             self.waiting.clear()
-            self.running = []
+            self.prefilling.clear()
+            self.decode_ready = []
 
         for request in requests:
             try:
