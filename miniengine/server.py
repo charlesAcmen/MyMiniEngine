@@ -220,7 +220,7 @@ async def _stream_response(
         if decode_stream is None:
             decode_stream = DecodeStream([], skip_special_tokens=True)
         text = decode_stream.step(
-            response_engine.tokenizer._tokenizer, output.token_id
+            response_engine.tokenizer.backend_tokenizer, output.token_id
         )
         if text is None:
             continue
