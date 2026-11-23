@@ -13,11 +13,12 @@ Request objects.  All scheduling and model logic lives elsewhere.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, HTTPException
@@ -25,7 +26,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from tokenizers.decoders import DecodeStream
 
-from miniengine.config import SamplingConfig
+from miniengine.config import SamplingConfig, validate_runtime_configs
 from miniengine.core import Request, TokenOutput
 from miniengine.engine import Engine
 from miniengine.scheduler import Scheduler
@@ -54,17 +55,34 @@ def _runtime_or_none(target_app: FastAPI) -> Runtime | None:
 
 # ── FastAPI app ─────────────────────────────────────────────────────────
 
-app = FastAPI(title="MiniEngine", version="0.1.0")
-
-# These are set by __main__.py before the server starts.
-engine: Engine | None = None
-scheduler: Scheduler | None = None
-model_id: str = "unknown"
+app = FastAPI(title="MiniEngine", version="0.1.0", lifespan=lifespan)
 
 
-def _require_runtime() -> Runtime:
+def install_runtime(runtime: Runtime) -> None:
+    """Install the process runtime before the ASGI lifespan starts."""
+    validate_runtime_configs(
+        runtime.engine.config, runtime.scheduler.config
+    )
+    app.state.runtime = runtime
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Tie the scheduler thread to the HTTP application's lifetime."""
+    runtime = _runtime_or_none(app)
+    if runtime is None:
+        yield
+        return
+    runtime.scheduler.start()
+    try:
+        yield
+    finally:
+        runtime.scheduler.stop()
+
+
+def _require_runtime(target_app: FastAPI = app) -> Runtime:
     """Return the initialized serving runtime or reject premature traffic."""
-    runtime: Runtime | None = getattr(app.state, "runtime", None)
+    runtime = _runtime_or_none(target_app)
     if runtime is None:
         raise HTTPException(status_code=503, detail="service is not initialized")
     return runtime

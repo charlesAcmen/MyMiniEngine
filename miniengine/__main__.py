@@ -56,25 +56,19 @@ def main() -> None:
     )
     sched = Scheduler(engine=engine, config=args.scheduler_config)
 
-    # Wire up the server module globals
-    srv.engine = engine
-    srv.scheduler = sched
-    srv.model_id = args.model
-
-    # Start scheduler background thread
-    sched.start()
+    # FastAPI owns the scheduler thread through its startup/shutdown lifespan.
+    srv.install_runtime(
+        srv.Runtime(engine=engine, scheduler=sched, model_id=args.model)
+    )
 
     logger.info("Starting server on %s:%d", args.host, args.port)
-    try:
-        uvicorn.run(
-            srv.app,
-            host=args.host,
-            port=args.port,
-            log_level="info",
-            access_log=False,
-        )
-    finally:
-        sched.stop()
+    uvicorn.run(
+        srv.app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        access_log=False,
+    )
 
 
 if __name__ == "__main__":
