@@ -7,6 +7,7 @@ import unittest
 
 import torch
 
+from miniengine.config import SchedulerConfig
 from miniengine.core import Request
 from miniengine.kv_memory_pool import KVMemoryPool
 from miniengine.paged_attention import (
@@ -84,7 +85,7 @@ class PagedSchedulerTest(unittest.TestCase):
             prefill_tokens={"a": 10, "b": 20},
             decode_tokens={"a": [11], "b": [21]},
         )
-        scheduler = Scheduler(engine, max_running=2)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
         a = self._request("a", 3)
         b = self._request("b", 5)
         scheduler.add_request(a)
@@ -105,7 +106,7 @@ class PagedSchedulerTest(unittest.TestCase):
             decode_tokens={"large": [11], "small": [21]},
             num_pages=3,  # scratch + two usable pages
         )
-        scheduler = Scheduler(engine, max_running=2)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
         large = self._request("large", 9)  # three pages: cannot fit
         small = self._request("small", 1)
         scheduler.add_request(large)

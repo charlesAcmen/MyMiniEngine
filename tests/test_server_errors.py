@@ -11,9 +11,12 @@ from fastapi import HTTPException
 
 from miniengine.core import Request, TokenOutput
 from miniengine.server import (
+    Runtime,
     _collect_full_response,
     _require_runtime,
     _stream_response,
+    app,
+    lifespan,
 )
 
 
@@ -33,13 +36,41 @@ class ServerFailureResponseTest(unittest.TestCase):
         return request
 
     def test_uninitialized_runtime_becomes_http_503(self) -> None:
-        with (
-            patch("miniengine.server.engine", None),
-            patch("miniengine.server.scheduler", None),
-            self.assertRaises(HTTPException) as raised,
-        ):
-            _require_runtime()
+        with patch.object(app.state, "runtime", None, create=True):
+            with self.assertRaises(HTTPException) as raised:
+                _require_runtime()
         self.assertEqual(raised.exception.status_code, 503)
+
+    def test_lifespan_starts_and_stops_installed_scheduler(self) -> None:
+        class FakeScheduler:
+            def __init__(self) -> None:
+                self.started = 0
+                self.stopped = 0
+
+            def start(self) -> None:
+                self.started += 1
+
+            def stop(self) -> None:
+                self.stopped += 1
+
+        scheduler = FakeScheduler()
+        runtime = Runtime(
+            engine=object(),
+            scheduler=scheduler,
+            model_id="test-model",
+        )
+
+        async def exercise_lifespan() -> None:
+            async with lifespan(app):
+                self.assertEqual(scheduler.started, 1)
+                self.assertEqual(scheduler.stopped, 0)
+                self.assertIs(_require_runtime(), runtime)
+
+        with patch.object(app.state, "runtime", runtime, create=True):
+            asyncio.run(exercise_lifespan())
+
+        self.assertEqual(scheduler.started, 1)
+        self.assertEqual(scheduler.stopped, 1)
 
     def test_non_streaming_failure_becomes_http_500(self) -> None:
         with self.assertRaises(HTTPException) as raised:

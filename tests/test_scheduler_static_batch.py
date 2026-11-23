@@ -1,8 +1,10 @@
 """Unit tests for M1 Part A's static-batch Scheduler behavior."""
 
 from collections import deque
+import threading
 import unittest
 
+from miniengine.config import SchedulerConfig
 from miniengine.core import Request, RequestStatus
 from miniengine.scheduler import Scheduler
 
@@ -85,7 +87,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
                 "three": [32, 33],
             },
         )
-        scheduler = Scheduler(engine, max_running=2)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
         requests = [self._request(name) for name in ("one", "two", "three")]
         for request in requests:
             scheduler.add_request(request)
@@ -94,7 +96,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         self.assertEqual(engine.prefill_calls, ["one", "two"])
         self.assertEqual(engine.decode_admission_validations, ["one", "two"])
         self.assertEqual(
-            [request.request_id for request in scheduler.running], ["one", "two"]
+            [request.request_id for request in scheduler.decode_ready], ["one", "two"]
         )
         self.assertEqual(
             [request.request_id for request in scheduler.waiting], ["three"]
@@ -107,7 +109,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         self.assertEqual(
             engine.batched_decode_calls, [["one", "two"], ["one", "two"]]
         )
-        self.assertEqual(scheduler.running, [])
+        self.assertEqual(scheduler.decode_ready, [])
         self.assertEqual(
             [request.request_id for request in scheduler.waiting], ["three"]
         )
@@ -120,7 +122,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
             prefill_tokens={"short": 10, "long": 20, "next": 30},
             decode_tokens={"short": [11], "long": [21, 22], "next": [31]},
         )
-        scheduler = Scheduler(engine, max_running=2)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
         short = self._request("short", max_new_tokens=2)
         long = self._request("long", max_new_tokens=3)
         next_request = self._request("next", max_new_tokens=2)
@@ -130,7 +132,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         scheduler.step_static_batch()
         self.assertEqual(scheduler.step_static_batch(), [short])
         self.assertEqual(
-            [request.request_id for request in scheduler.running], ["long"]
+            [request.request_id for request in scheduler.decode_ready], ["long"]
         )
         self.assertEqual(
             [request.request_id for request in scheduler.waiting], ["next"]
@@ -138,7 +140,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
         self.assertEqual(engine.prefill_calls, ["short", "long"])
 
         self.assertEqual(scheduler.step_static_batch(), [long])
-        self.assertEqual(scheduler.running, [])
+        self.assertEqual(scheduler.decode_ready, [])
         self.assertEqual(engine.prefill_calls, ["short", "long"])
 
         scheduler.step_static_batch()
@@ -146,7 +148,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
 
     def test_completion_releases_kv_emits_sentinel_and_updates_stats(self) -> None:
         engine = FakeEngine(prefill_tokens={"done": 40}, decode_tokens={"done": [41]})
-        scheduler = Scheduler(engine, max_running=2)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
         request = self._request("done", max_new_tokens=2)
         scheduler.add_request(request)
 
@@ -168,25 +170,25 @@ class StaticBatchSchedulerTest(unittest.TestCase):
             prefill_tokens={"running": 10, "waiting": 20},
             decode_tokens={"running": [], "waiting": []},
         )
-        scheduler = Scheduler(engine, max_running=2)
-        running = self._request("running")
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
+        decode_ready_request = self._request("running")
         waiting = self._request("waiting")
-        scheduler.add_request(running)
+        scheduler.add_request(decode_ready_request)
         scheduler.add_request(waiting)
 
         scheduler.waiting.popleft()
-        running.status = RequestStatus.RUNNING
-        running.kv_cache = object()
-        scheduler.running.append(running)
+        decode_ready_request.status = RequestStatus.RUNNING
+        decode_ready_request.kv_cache = object()
+        scheduler.decode_ready.append(decode_ready_request)
         scheduler._fail_outstanding_requests(RuntimeError("kernel failed"))
 
-        self.assertEqual(running.status, RequestStatus.FAILED)
+        self.assertEqual(decode_ready_request.status, RequestStatus.FAILED)
         self.assertEqual(waiting.status, RequestStatus.FAILED)
-        self.assertIsNone(running.kv_cache)
+        self.assertIsNone(decode_ready_request.kv_cache)
         self.assertEqual(list(scheduler.waiting), [])
-        self.assertEqual(scheduler.running, [])
+        self.assertEqual(scheduler.decode_ready, [])
         self.assertEqual(scheduler.total_failed, 2)
-        for request in (running, waiting):
+        for request in (decode_ready_request, waiting):
             terminal = request.token_queue.get_nowait()
             self.assertTrue(terminal.finished)
             self.assertEqual(terminal.error, "RuntimeError: kernel failed")
@@ -197,12 +199,12 @@ class StaticBatchSchedulerTest(unittest.TestCase):
             decode_tokens={"stop": []},
             stop_tokens={99},
         )
-        scheduler = Scheduler(engine, max_running=2)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
         request = self._request("stop", max_new_tokens=8)
         scheduler.add_request(request)
 
         self.assertEqual(scheduler.step_static_batch(), [request])
-        self.assertEqual(scheduler.running, [])
+        self.assertEqual(scheduler.decode_ready, [])
         self.assertEqual(engine.batched_decode_calls, [])
         self.assertEqual(request.status, RequestStatus.FINISHED)
         self.assertIsNone(request.kv_cache)
@@ -216,7 +218,7 @@ class StaticBatchSchedulerTest(unittest.TestCase):
             decode_tokens={"fixed": [10, 11]},
             stop_tokens={99},
         )
-        scheduler = Scheduler(engine, max_running=1)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=1))
         request = self._request("fixed", max_new_tokens=3)
         request.ignore_eos = True
         scheduler.add_request(request)
@@ -243,7 +245,7 @@ class ContinuousBatchSchedulerTest(unittest.TestCase):
             prefill_tokens={"one": 11, "two": 21},
             decode_tokens={"one": [12], "two": [22]},
         )
-        scheduler = Scheduler(engine, max_running=2)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
         requests = [self._request(name) for name in ("one", "two")]
         for request in requests:
             scheduler.add_request(request)
@@ -252,7 +254,7 @@ class ContinuousBatchSchedulerTest(unittest.TestCase):
         self.assertEqual(engine.prefill_calls, ["one", "two"])
         self.assertEqual(engine.batched_decode_calls, [["one", "two"]])
         self.assertEqual(
-            [request.request_id for request in scheduler.running], ["one", "two"]
+            [request.request_id for request in scheduler.decode_ready], ["one", "two"]
         )
 
     def test_finished_slot_is_refilled_on_the_next_iteration(self) -> None:
@@ -264,7 +266,7 @@ class ContinuousBatchSchedulerTest(unittest.TestCase):
                 "next": [31],
             },
         )
-        scheduler = Scheduler(engine, max_running=2)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
         short = self._request("short", max_new_tokens=2)
         long = self._request("long", max_new_tokens=3)
         next_request = self._request("next", max_new_tokens=2)
@@ -273,7 +275,7 @@ class ContinuousBatchSchedulerTest(unittest.TestCase):
 
         self.assertEqual(scheduler.step_continuous_batch(), [short])
         self.assertEqual(
-            [request.request_id for request in scheduler.running], ["long"]
+            [request.request_id for request in scheduler.decode_ready], ["long"]
         )
         self.assertEqual(engine.prefill_calls, ["short", "long"])
 
@@ -282,7 +284,7 @@ class ContinuousBatchSchedulerTest(unittest.TestCase):
         )
         self.assertEqual(engine.prefill_calls, ["short", "long", "next"])
         self.assertEqual(engine.batched_decode_calls, [["short", "long"], ["long", "next"]])
-        self.assertEqual(scheduler.running, [])
+        self.assertEqual(scheduler.decode_ready, [])
         self.assertEqual(list(scheduler.waiting), [])
 
     def test_prefill_stop_does_not_enter_the_decode_batch(self) -> None:
@@ -291,7 +293,7 @@ class ContinuousBatchSchedulerTest(unittest.TestCase):
             decode_tokens={"stop": []},
             stop_tokens={99},
         )
-        scheduler = Scheduler(engine, max_running=2)
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=2))
         request = self._request("stop", max_new_tokens=8)
         scheduler.add_request(request)
 
@@ -299,6 +301,41 @@ class ContinuousBatchSchedulerTest(unittest.TestCase):
         self.assertEqual(engine.batched_decode_calls, [])
         self.assertEqual(request.status, RequestStatus.FINISHED)
         self.assertIsNone(request.kv_cache)
+
+
+class SchedulerLoopWakeupTests(unittest.TestCase):
+    def test_idle_loop_wakes_for_new_work_and_stop_wakes_idle_loop(self) -> None:
+        engine = FakeEngine(prefill_tokens={}, decode_tokens={})
+        scheduler = Scheduler(engine, SchedulerConfig(max_running=1))
+        step_called = threading.Event()
+
+        def record_one_step() -> list[Request]:
+            # Consume the synthetic work so the loop blocks again after this step.
+            with scheduler._lock:
+                scheduler.waiting.clear()
+                scheduler._requests.clear()
+            step_called.set()
+            return []
+
+        scheduler._step_impl = record_one_step
+        scheduler.start()
+        try:
+            scheduler.add_request(
+                Request(
+                    request_id="wake",
+                    input_ids=[1],
+                    max_new_tokens=1,
+                )
+            )
+            self.assertTrue(
+                step_called.wait(timeout=1.0),
+                "new work did not wake the idle scheduler",
+            )
+        finally:
+            scheduler.stop()
+
+        self.assertIsNotNone(scheduler._thread)
+        self.assertFalse(scheduler._thread.is_alive())
 
 
 if __name__ == "__main__":
