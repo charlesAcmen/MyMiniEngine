@@ -53,10 +53,6 @@ def _runtime_or_none(target_app: FastAPI) -> Runtime | None:
     return runtime
 
 
-# ── FastAPI app ─────────────────────────────────────────────────────────
-
-app = FastAPI(title="MiniEngine", version="0.1.0", lifespan=lifespan)
-
 
 def install_runtime(runtime: Runtime) -> None:
     """Install the process runtime before the ASGI lifespan starts."""
@@ -78,6 +74,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         runtime.scheduler.stop()
+
+
+# ── FastAPI app ─────────────────────────────────────────────────────────
+
+app = FastAPI(title="MiniEngine", version="0.1.0", lifespan=lifespan)
 
 
 def _require_runtime(target_app: FastAPI = app) -> Runtime:
