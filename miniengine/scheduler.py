@@ -368,9 +368,102 @@ class Scheduler:
                 if self._check_finished(request, token_id):
                     self._finish_request(request, finished)
                 else:
-                    self.running.append(request)
+                    self.decode_ready.append(request)
 
-        if not self.running:
+        if not self.decode_ready:
+            return finished
+
+        active_requests = self.decode_ready
+        token_ids = self.engine.decode_batch(active_requests)
+        if len(token_ids) != len(active_requests):
+            raise RuntimeError(
+                "paged_decode must return one token for every decode-ready request"
+            )
+
+        decode_survivors: list[Request] = []
+        for request, token_id in zip(active_requests, token_ids):
+            request.output_ids.append(token_id)
+            self._stream_token(request, token_id)
+            if self._check_finished(request, token_id):
+                self._finish_request(request, finished)
+            else:
+                decode_survivors.append(request)
+
+        self.decode_ready = decode_survivors
+        return finished
+
+    def step_paged_chunked(self) -> list[Request]:
+        """Run one FCFS token-budgeted chunked-prefill/decode iteration."""
+        finished: list[Request] = []
+        pool = self.engine.kv_pool
+        if pool is None:
+            raise RuntimeError("chunked prefill requires Engine(mode='paged')")
+
+        available_slots = (
+            self.config.max_running - len(self.prefilling) - len(self.decode_ready)
+        )
+        with self._lock:
+            for _ in range(min(available_slots, len(self.waiting))):
+                request = self.waiting[0]
+                required_pages = pool.pages_needed(request.num_input_tokens)
+                if required_pages > pool.num_pages - 1:
+                    raise RuntimeError(
+                        f"request {request.request_id} prompt needs "
+                        f"{required_pages} KV pages, but the pool has only "
+                        f"{pool.num_pages - 1} usable pages"
+                    )
+                request = self.waiting.popleft()
+                request.status = RequestStatus.RUNNING
+                self.prefilling.append(request)
+
+        chunks = self._plan_prefill_chunks(pool)
+        if chunks:
+            token_ids = self.engine.paged_prefill_chunks(chunks)
+            if len(token_ids) != len(chunks):
+                raise RuntimeError(
+                    "paged_prefill_chunks must return one result per chunk"
+                )
+
+            completed_requests: set[int] = set()
+            #zip() will hide:
+            # zip([A_partial, B_final], [123])
+            # B_final missing error
+            for chunk, token_id in zip(chunks, token_ids):
+                request = chunk.request
+                if token_id is None:
+                    if chunk.completes_prompt:
+                        raise RuntimeError(
+                            "a final prefill chunk must return a sampled token"
+                        )
+                    continue
+                if not chunk.completes_prompt:
+                    raise RuntimeError(
+                        "a partial prefill chunk must not return a sampled token"
+                    )
+
+                completed_requests.add(id(request))
+                request.output_ids.append(token_id)
+                self._stream_token(request, token_id)
+                if self._check_finished(request, token_id):
+                    self._finish_request(request, finished)
+                else:
+                    self.decode_ready.append(request)
+
+            if completed_requests:
+                self.prefilling = deque(
+                    request
+                    for request in self.prefilling
+                    if id(request) not in completed_requests
+                )
+        elif self.prefilling and not self.decode_ready:
+        # No progress can be made,raise error
+            request = self.prefilling[0]
+            raise RuntimeError(
+                f"chunked prefill cannot make progress for request "
+                f"{request.request_id}: no KV page is available"
+            )
+
+        if not self.decode_ready:
             return finished
 
         active_requests = self.decode_ready
