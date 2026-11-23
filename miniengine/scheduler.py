@@ -9,7 +9,7 @@ The scheduler sits between the HTTP server and the model engine:
 
 It runs in a background thread, repeatedly calling step() which:
   1. Admits waiting requests and prefills them  (WAITING → RUNNING)
-  2. Runs one decode step on every running request
+  2. Runs one decode step on every decode-ready request
   3. Retires finished requests                    (RUNNING → FINISHED)
 
 An unrecoverable step exception fails all outstanding requests once and

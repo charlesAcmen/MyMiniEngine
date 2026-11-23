@@ -151,7 +151,7 @@ def build_server_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse server arguments and construct the immutable engine config."""
+    """Parse server arguments and construct immutable runtime configs."""
     parser = build_server_parser()
     args = parser.parse_args(argv)
     try:
