@@ -342,6 +342,61 @@ class Attention(nn.Module):
         out = out.reshape(total_tokens, self.num_heads * self.head_dim)
         return self.o_proj(out)
 
+    def forward_paged_prefill_suffix(
+        self,
+        hidden: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
+        block_table: torch.Tensor,
+        max_seqlen_q: int,
+        max_seqlen_k: int,
+    ) -> torch.Tensor:
+        """Attend from newly packed suffixes into their full paged histories."""
+        total_tokens = hidden.shape[0]
+        hidden_batched = hidden.unsqueeze(0)
+
+        q = self.q_proj(hidden_batched).view(
+            1, total_tokens, self.num_heads, self.head_dim
+        ).transpose(1, 2)
+        k = self.k_proj(hidden_batched).view(
+            1, total_tokens, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+        v = self.v_proj(hidden_batched).view(
+            1, total_tokens, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+
+        q = apply_rotary_emb(self.q_norm(q), cos, sin)
+        k = apply_rotary_emb(self.k_norm(k), cos, sin)
+        q_tokens = q.squeeze(0).transpose(0, 1).contiguous()
+        k_tokens = k.squeeze(0).transpose(0, 1).contiguous()
+        v_tokens = v.squeeze(0).transpose(0, 1).contiguous()
+
+        k_cache.view(-1, self.num_kv_heads, self.head_dim).index_copy_(
+            0, slot_mapping, k_tokens
+        )
+        v_cache.view(-1, self.num_kv_heads, self.head_dim).index_copy_(
+            0, slot_mapping, v_tokens
+        )
+
+        out = self._require_paged_ops().prefill(
+            q_tokens,
+            k_cache,
+            v_cache,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            max_seqlen_q,
+            max_seqlen_k,
+            causal=True,
+            block_table=block_table,
+        )
+        out = out.reshape(total_tokens, self.num_heads * self.head_dim)
+        return self.o_proj(out)
+
     def forward_paged_decode(
         self,
         q: torch.Tensor,
@@ -486,6 +541,43 @@ class TransformerBlock(nn.Module):
             slot_mapping,
             cu_seqlens,
             max_seqlen,
+        )
+        hidden = residual + hidden
+
+        residual = hidden
+        hidden = self.post_attention_layernorm(hidden)
+        hidden = self.mlp(hidden)
+        return residual + hidden
+
+    def forward_paged_prefill_suffix(
+        self,
+        hidden: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
+        block_table: torch.Tensor,
+        max_seqlen_q: int,
+        max_seqlen_k: int,
+    ) -> torch.Tensor:
+        """Run one layer over query suffixes with committed paged prefixes."""
+        residual = hidden
+        hidden = self.input_layernorm(hidden)
+        hidden = self.self_attn.forward_paged_prefill_suffix(
+            hidden,
+            cos,
+            sin,
+            k_cache,
+            v_cache,
+            slot_mapping,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            block_table,
+            max_seqlen_q,
+            max_seqlen_k,
         )
         hidden = residual + hidden
 
@@ -642,6 +734,38 @@ class TransformerModel(nn.Module):
             )
         return self.norm(hidden)
 
+    def forward_paged_prefill_suffix(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        kv_caches: Sequence[tuple[torch.Tensor, torch.Tensor]],
+        slot_mapping: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
+        block_table: torch.Tensor,
+        max_seqlen_q: int,
+        max_seqlen_k: int,
+    ) -> torch.Tensor:
+        """Run every layer for packed suffixes against their paged histories."""
+        hidden = self.embed_tokens(input_ids)
+        cos, sin = self.rotary_emb(position_ids.unsqueeze(0), max_seqlen_k)
+
+        for layer, (k_cache, v_cache) in zip(self.layers, kv_caches):
+            hidden = layer.forward_paged_prefill_suffix(
+                hidden,
+                cos,
+                sin,
+                k_cache,
+                v_cache,
+                slot_mapping,
+                cu_seqlens_q,
+                cu_seqlens_k,
+                block_table,
+                max_seqlen_q,
+                max_seqlen_k,
+            )
+        return self.norm(hidden)
+
     def forward_paged_decode(
         self,
         input_ids: torch.Tensor,
@@ -742,6 +866,34 @@ class CausalLM(nn.Module):
         last_token_indices = cu_seqlens[1:].to(torch.long) - 1
         final_hidden = hidden.index_select(0, last_token_indices)
         return self._project_logits(final_hidden)
+
+    def forward_paged_prefill_suffix(
+        self,
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        kv_caches: Sequence[tuple[torch.Tensor, torch.Tensor]],
+        slot_mapping: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
+        block_table: torch.Tensor,
+        sample_indices: torch.Tensor,
+        max_seqlen_q: int,
+        max_seqlen_k: int,
+    ) -> torch.Tensor:
+        """Project logits only for suffixes that complete their prompts."""
+        hidden = self.model.forward_paged_prefill_suffix(
+            input_ids,
+            position_ids,
+            kv_caches,
+            slot_mapping,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            block_table,
+            max_seqlen_q,
+            max_seqlen_k,
+        )
+        completed_hidden = hidden.index_select(0, sample_indices)
+        return self._project_logits(completed_hidden)
 
     def forward_paged_decode(
         self,
