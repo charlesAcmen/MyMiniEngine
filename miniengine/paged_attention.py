@@ -258,6 +258,149 @@ def commit_prefill(requests: "Sequence[Request]") -> None:
         request.kv_seq_len = request.num_input_tokens
 
 
+def allocate_prefill_suffix_pages(
+    suffixes: "Sequence[PrefillSuffix]", pool: KVMemoryPool
+) -> list[int]:
+    """Grow suffix page tables atomically and return their original lengths."""
+    if not suffixes:
+        raise ValueError("prefix-continuation prefill requires at least one suffix")
+
+    original_page_counts = [len(suffix.request.page_table) for suffix in suffixes]
+    seen_requests: set[int] = set()
+    try:
+        for suffix in suffixes:
+            request = suffix.request
+            request_identity = id(request)
+            if request_identity in seen_requests:
+                raise ValueError(
+                    f"request {request.request_id} appears more than once in one suffix batch"
+                )
+            seen_requests.add(request_identity)
+            if suffix.start != request.kv_seq_len:
+                raise ValueError(
+                    f"request {request.request_id} suffix starts at {suffix.start}, "
+                    f"but committed KV length is {request.kv_seq_len}"
+                )
+            if not 0 <= suffix.start < suffix.end <= request.num_input_tokens:
+                raise ValueError(
+                    f"request {request.request_id} has invalid prefill suffix "
+                    f"[{suffix.start}, {suffix.end})"
+                )
+            expected_existing_pages = pool.pages_needed(suffix.start)
+            if len(request.page_table) != expected_existing_pages:
+                raise ValueError(
+                    f"request {request.request_id} owns {len(request.page_table)} pages "
+                    f"for {suffix.start} committed tokens; expected {expected_existing_pages}"
+                )
+
+            required_pages = pool.pages_needed(suffix.end)
+            missing_pages = required_pages - len(request.page_table)
+            request.page_table.extend(pool.allocate(missing_pages))
+    except Exception:
+        rollback_prefill_suffix_pages(suffixes, original_page_counts, pool)
+        raise
+    return original_page_counts
+
+
+def rollback_prefill_suffix_pages(
+    suffixes: "Sequence[PrefillSuffix]",
+    original_page_counts: "Sequence[int]",
+    pool: KVMemoryPool,
+) -> None:
+    """Return pages added by an uncommitted suffix batch."""
+    for suffix, original_count in zip(suffixes, original_page_counts):
+        request = suffix.request
+        newly_allocated = request.page_table[original_count:]
+        pool.free(newly_allocated)
+        del request.page_table[original_count:]
+
+
+def build_packed_prefill_suffix(
+    suffixes: "Sequence[PrefillSuffix]", pool: KVMemoryPool
+) -> PackedPrefillSuffix:
+    """Build packed query metadata against full paged KV histories."""
+    if not suffixes:
+        raise ValueError("prefix-continuation prefill requires at least one suffix")
+
+    packed_ids: list[int] = []
+    packed_positions: list[int] = []
+    slots: list[int] = []
+    sample_indices: list[int] = []
+    cu_seqlens_q = [0]
+    cu_seqlens_k = [0]
+    max_seqlen_q = 0
+    max_seqlen_k = 0
+
+    for suffix in suffixes:
+        request = suffix.request
+        if suffix.start != request.kv_seq_len:
+            raise ValueError(
+                f"request {request.request_id} suffix does not start at committed KV"
+            )
+        expected_pages = pool.pages_needed(suffix.end)
+        if len(request.page_table) != expected_pages:
+            raise ValueError(
+                f"request {request.request_id} needs {expected_pages} pages through "
+                f"token {suffix.end}, but owns {len(request.page_table)}"
+            )
+        #for fa
+        packed_ids.extend(request.input_ids[suffix.start : suffix.end])
+        packed_positions.extend(range(suffix.start, suffix.end))
+        #slot_mapping is used to map logical position to physical slot in KVMemoryPool
+        slots.extend(
+            _slot_for_position(request.page_table, position, pool.page_size)
+            for position in range(suffix.start, suffix.end)
+        )
+        cu_seqlens_q.append(cu_seqlens_q[-1] + suffix.num_tokens)
+        cu_seqlens_k.append(cu_seqlens_k[-1] + suffix.end)
+        max_seqlen_q = max(max_seqlen_q, suffix.num_tokens)
+        max_seqlen_k = max(max_seqlen_k, suffix.end)
+        if suffix.completes_prompt:
+            #sample only when completes
+            sample_indices.append(cu_seqlens_q[-1] - 1)
+
+    max_pages = max(len(suffix.request.page_table) for suffix in suffixes)
+    #non ragged square
+    block_table = torch.full(
+        #len(suffixes)*max_pages
+        (len(suffixes), max_pages),
+        fill_value=pool.SCRATCH_PAGE,
+        dtype=torch.int32,
+        device=pool.device,
+    )
+    for row, suffix in enumerate(suffixes):
+        page_table = suffix.request.page_table
+        block_table[row, : len(page_table)] = torch.tensor(
+            page_table, dtype=torch.int32, device=pool.device
+        )
+
+    return PackedPrefillSuffix(
+        input_ids=torch.tensor(packed_ids, dtype=torch.long, device=pool.device),
+        position_ids=torch.tensor(
+            packed_positions, dtype=torch.long, device=pool.device
+        ),
+        cu_seqlens_q=torch.tensor(
+            cu_seqlens_q, dtype=torch.int32, device=pool.device
+        ),
+        cu_seqlens_k=torch.tensor(
+            cu_seqlens_k, dtype=torch.int32, device=pool.device
+        ),
+        slot_mapping=torch.tensor(slots, dtype=torch.long, device=pool.device),
+        block_table=block_table,
+        sample_indices=torch.tensor(
+            sample_indices, dtype=torch.long, device=pool.device
+        ),
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_k=max_seqlen_k,
+    )
+
+
+def commit_prefill_suffixes(suffixes: "Sequence[PrefillSuffix]") -> None:
+    """Publish every successfully written suffix end position."""
+    for suffix in suffixes:
+        suffix.request.kv_seq_len = suffix.end
+
+
 def build_paged_decode(
     requests: "Sequence[Request]", pool: KVMemoryPool
 ) -> PagedDecode:
