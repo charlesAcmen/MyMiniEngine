@@ -26,7 +26,6 @@ from collections import deque
 from miniengine.config import SchedulerConfig
 from miniengine.core import Request, RequestStatus, TokenOutput
 from miniengine.engine import Engine
-from miniengine.paged_attention import PrefillChunk
 
 logger = logging.getLogger(__name__)
 
@@ -51,19 +50,13 @@ class Scheduler:
     ) -> None:
         self.engine = engine
         self.config = config
-        if config.prefill_chunk_size > 0 and engine.mode != "paged":
-            raise ValueError("chunked prefill is supported only in paged mode")
 
-        # Engine.mode  and immutable prefill policy is the single source of truth. Store the selected bound
+        # Engine.mode is the single source of truth. Store the selected bound
         # method once so every scheduler iteration performs a direct callable
         # invocation instead of repeating mode dispatch in the hot loop.
         step_strategies = {
             "batched": self.step_continuous_batch,
-            "paged": (
-                self.step_paged_chunked
-                if config.prefill_chunk_size > 0
-                else self.step_paged
-            ),
+            "paged": self.step_paged,
         }
         try:
             self._step_impl = step_strategies[engine.mode]
@@ -72,10 +65,9 @@ class Scheduler:
 
         # Queues
         self.waiting: deque[Request] = deque()
-        self.prefilling: deque[Request] = deque()
         self.decode_ready: list[Request] = []
-        # Registry includes waiting, prefilling, decode-ready, and requests held in
-        # local step variables, so a step failure can terminate every waiter.
+        # Registry includes waiting, decode-ready, and requests held in local step
+        # variables, so a step failure can terminate every waiter.
         self._requests: dict[str, Request] = {}
 
         # Thread control
@@ -132,7 +124,6 @@ class Scheduler:
                 self._work_available.wait_for(
                     lambda: not self._running_flag
                     or bool(self.waiting)
-                    or bool(self.prefilling)
                     or bool(self.decode_ready)
                 )
                 if not self._running_flag:
@@ -392,148 +383,6 @@ class Scheduler:
         self.decode_ready = decode_survivors
         return finished
 
-    def step_paged_chunked(self) -> list[Request]:
-        """Run one FCFS token-budgeted chunked-prefill/decode iteration."""
-        finished: list[Request] = []
-        pool = self.engine.kv_pool
-        if pool is None:
-            raise RuntimeError("chunked prefill requires Engine(mode='paged')")
-
-        available_slots = (
-            self.config.max_running - len(self.prefilling) - len(self.decode_ready)
-        )
-        with self._lock:
-            for _ in range(min(available_slots, len(self.waiting))):
-                request = self.waiting[0]
-                required_pages = pool.pages_needed(request.num_input_tokens)
-                if required_pages > pool.num_pages - 1:
-                    raise RuntimeError(
-                        f"request {request.request_id} prompt needs "
-                        f"{required_pages} KV pages, but the pool has only "
-                        f"{pool.num_pages - 1} usable pages"
-                    )
-                request = self.waiting.popleft()
-                request.status = RequestStatus.RUNNING
-                self.prefilling.append(request)
-
-        chunks = self._plan_prefill_chunks(pool)
-        if chunks:
-            token_ids = self.engine.paged_prefill_chunks(chunks)
-            if len(token_ids) != len(chunks):
-                raise RuntimeError(
-                    "paged_prefill_chunks must return one result per chunk"
-                )
-
-            completed_requests: set[int] = set()
-            #zip() will hide:
-            # zip([A_partial, B_final], [123])
-            # B_final missing error
-            for chunk, token_id in zip(chunks, token_ids):
-                request = chunk.request
-                if token_id is None:
-                    if chunk.completes_prompt:
-                        raise RuntimeError(
-                            "a final prefill chunk must return a sampled token"
-                        )
-                    continue
-                if not chunk.completes_prompt:
-                    raise RuntimeError(
-                        "a partial prefill chunk must not return a sampled token"
-                    )
-
-                completed_requests.add(id(request))
-                request.output_ids.append(token_id)
-                self._stream_token(request, token_id)
-                if self._check_finished(request, token_id):
-                    self._finish_request(request, finished)
-                else:
-                    self.decode_ready.append(request)
-
-            if completed_requests:
-                self.prefilling = deque(
-                    request
-                    for request in self.prefilling
-                    if id(request) not in completed_requests
-                )
-        elif self.prefilling and not self.decode_ready:
-        # No progress can be made,raise error
-            request = self.prefilling[0]
-            raise RuntimeError(
-                f"chunked prefill cannot make progress for request "
-                f"{request.request_id}: no KV page is available"
-            )
-
-        if not self.decode_ready:
-            return finished
-
-        active_requests = self.decode_ready
-        token_ids = self.engine.decode_batch(active_requests)
-        if len(token_ids) != len(active_requests):
-            raise RuntimeError(
-                "paged_decode must return one token for every decode-ready request"
-            )
-
-        decode_survivors: list[Request] = []
-        for request, token_id in zip(active_requests, token_ids):
-            request.output_ids.append(token_id)
-            self._stream_token(request, token_id)
-            if self._check_finished(request, token_id):
-                self._finish_request(request, finished)
-            else:
-                decode_survivors.append(request)
-
-        self.decode_ready = decode_survivors
-        return finished
-
-    def _plan_prefill_chunks(self, pool) -> list[PrefillChunk]:
-        """Spend one prefill budget in FCFS order without mutating requests."""
-        #total token budget across all reqs
-        remaining_budget = self.config.prefill_chunk_size
-        #page budget
-        available_pages = pool.num_free
-        chunks: list[PrefillChunk] = []
-
-        #FCFS
-        for request in self.prefilling:
-            if remaining_budget == 0:
-                break
-            #num of tokens already prefilled,kv cached
-            start = request.kv_seq_len
-            #do not use output ids
-            remaining_prompt = request.num_input_tokens - start
-            if remaining_prompt <= 0:
-                raise RuntimeError(
-                    f"request {request.request_id} remained in prefill after completion"
-                )
-
-            max_storable_end = (
-                len(request.page_table) + available_pages
-            ) * pool.page_size
-            #do not use available pages*page size，which may waste tokens at the last page
-            capacity_tokens = max(0, max_storable_end - start)
-            chunk_tokens = min(
-                remaining_budget,
-                remaining_prompt,
-                capacity_tokens,
-            )
-            if chunk_tokens == 0:
-            #num_free =0
-                break
-
-            end = start + chunk_tokens
-            #plan,not real allocation in this func
-            pages_added = pool.pages_needed(end) - len(request.page_table)
-            available_pages -= pages_added
-            chunks.append(PrefillChunk(request=request, start=start, end=end))
-            remaining_budget -= chunk_tokens
-
-            # Completion-first FCFS leaves at most one partially prefilling
-            # request holding pages between scheduler iterations.
-            if end < request.num_input_tokens:
-                break
-
-        return chunks
-
     # ── Helpers ─────────────────────────────────────────────────────────
 
     def _check_finished(self, req: Request, token_id: int) -> bool:
@@ -581,7 +430,6 @@ class Scheduler:
             requests = list(self._requests.values())
             self._requests.clear()
             self.waiting.clear()
-            self.prefilling.clear()
             self.decode_ready = []
 
         for request in requests:

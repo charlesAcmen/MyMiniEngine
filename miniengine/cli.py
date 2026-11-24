@@ -115,16 +115,6 @@ def build_server_parser() -> argparse.ArgumentParser:
         help="Fraction of GPU memory reserved for model weights plus the fixed KV pool",
     )
     parser.add_argument(
-        "--prefill-chunk-size",
-        type=non_negative_int,
-        default=0,
-        metavar="N",
-        help=(
-            "Maximum prefill query tokens scheduled per step; "
-            "0 preserves the M2 single-shot prefill path"
-        ),
-    )
-    parser.add_argument(
         "--sampling-config",
         type=SamplingConfig.from_json,
         default=SamplingConfig(),
@@ -168,10 +158,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 batch_sizes=args.cuda_graph_batch_sizes,
             ),
         )
-        args.scheduler_config = SchedulerConfig(
-            max_running=args.max_running,
-            prefill_chunk_size=args.prefill_chunk_size,
-        )
+        args.scheduler_config = SchedulerConfig(max_running=args.max_running)
         validate_runtime_configs(args.engine_config, args.scheduler_config)
     except ValueError as exc:
         parser.error(str(exc))

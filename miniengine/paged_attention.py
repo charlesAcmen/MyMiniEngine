@@ -57,8 +57,8 @@ class PackedPrefill:
 
 
 @dataclass(frozen=True)
-class PrefillChunk:
-    """One contiguous prompt slice scheduled for an in-flight request."""
+class PrefillSuffix:
+    """One uncached prompt suffix following a request's committed KV prefix."""
 
     request: Request
     start: int

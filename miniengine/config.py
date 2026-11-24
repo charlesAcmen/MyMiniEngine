@@ -109,14 +109,10 @@ class SchedulerConfig:
     """Immutable admission and iteration-level scheduling policy."""
 
     max_running: int = 16
-    # Zero preserves the M2 single-shot packed-prefill path.
-    prefill_chunk_size: int = 0
 
     def __post_init__(self) -> None:
         if self.max_running < 1:
             raise ValueError("max_running must be positive")
-        if self.prefill_chunk_size < 0:
-            raise ValueError("prefill_chunk_size must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -152,8 +148,6 @@ def validate_runtime_configs(
     engine: EngineConfig, scheduler: SchedulerConfig
 ) -> None:
     """Reject incompatible execution and scheduling policies before startup."""
-    if scheduler.prefill_chunk_size > 0 and engine.mode != "paged":
-        raise ValueError("chunked prefill is supported only in paged mode")
     if (
         engine.cuda_graph.enabled
         and max(engine.cuda_graph.batch_sizes) < scheduler.max_running
