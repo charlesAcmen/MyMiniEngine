@@ -251,7 +251,7 @@ class Scheduler:
 
         # A slot is free whenever no decode-ready request owns its KV cache.
         with self._lock:
-            admitted_requests = [
+            prefill_batch = [
                 self.waiting.popleft()
                 for _ in range(
                     min(
@@ -261,16 +261,16 @@ class Scheduler:
                 )
             ]
 
-        for req in admitted_requests:
+        for req in prefill_batch:
             req.status = RequestStatus.RUNNING
 
         # Engine bound this call to M1's preserved per-request prefill strategy.
-        token_ids = self.engine.prefill_batch(admitted_requests)
-        if len(token_ids) != len(admitted_requests):
+        token_ids = self.engine.prefill_batch(prefill_batch)
+        if len(token_ids) != len(prefill_batch):
             raise RuntimeError(
                 "prefill_batch must return one token for every admitted request"
             )
-        for req, token_id in zip(admitted_requests, token_ids):
+        for req, token_id in zip(prefill_batch, token_ids):
             req.output_ids.append(token_id)
             self._stream_token(req, token_id)
 
@@ -315,7 +315,7 @@ class Scheduler:
         """
         # M2 baseline: the original single-shot packed-prefill path.
         finished: list[Request] = []
-        admitted_requests: list[Request] = []
+        prefill_batch: list[Request] = []
         pool = self.engine.kv_pool
         if pool is None:
             raise RuntimeError("paged scheduler requires Engine(mode='paged')")
@@ -331,29 +331,29 @@ class Scheduler:
                 pages_needed = pool.pages_needed(request.num_input_tokens)
                 if pages_needed > available_pages:
                     break
-                admitted_requests.append(self.waiting.popleft())
+                prefill_batch.append(self.waiting.popleft())
                 available_pages -= pages_needed
 
-        if admitted_requests:
-            for request in admitted_requests:
+        if prefill_batch:
+            for request in prefill_batch:
                 request.status = RequestStatus.RUNNING
             try:
                 #packed prefill
-                token_ids = self.engine.prefill_batch(admitted_requests)
+                token_ids = self.engine.prefill_batch(prefill_batch)
             except Exception:
                 # Engine rolls back page ownership. Restore FCFS queue order so
                 # a transient kernel failure does not silently lose requests.
                 with self._lock:
-                    for request in reversed(admitted_requests):
+                    for request in reversed(prefill_batch):
                         request.status = RequestStatus.WAITING
                         self.waiting.appendleft(request)
                 raise
 
-            if len(token_ids) != len(admitted_requests):
+            if len(token_ids) != len(prefill_batch):
                 raise RuntimeError(
                     "paged_prefill must return one token for every admitted request"
                 )
-            for request, token_id in zip(admitted_requests, token_ids):
+            for request, token_id in zip(prefill_batch, token_ids):
                 request.output_ids.append(token_id)
                 self._stream_token(request, token_id)
                 if self._check_finished(request, token_id):
