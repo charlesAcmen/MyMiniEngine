@@ -117,6 +117,73 @@ class PagedDecode:
     cache_seqlens: torch.Tensor
     block_table: torch.Tensor
 
+@dataclass(frozen=True)
+class PackedPrefillSuffix:
+    """Ragged query suffixes attending to their full committed paged prefixes.
+
+    ``input_ids`` and ``position_ids`` cover only newly scheduled query tokens.
+    ``cu_seqlens_k`` describes each sequence after its new suffix is appended,
+    while ``block_table`` maps those logical histories into the stable KV pool.
+    """
+
+    # Example with page_size = 4 and two requests:
+    #
+    # request A:
+    #   input_ids = [10, 11, 12, 13, 14]
+    #   committed KV prefix = [10, 11]        (kv_seq_len = 2)
+    #   scheduled suffix = [12, 13, 14]       ([start, end) = [2, 5))
+    #   page_table = [1, 4]
+    #
+    # request B:
+    #   input_ids = [20, 21, 22, 23, 24, 25, 26, 27]
+    #   committed KV prefix = [20, 21, 22, 23] (kv_seq_len = 4)
+    #   scheduled suffix = [24, 25]            ([start, end) = [4, 6))
+    #   page_table = [2, 3]
+    #
+    # input_ids = [12, 13, 14, 24, 25]
+    # position_ids = [2, 3, 4, 4, 5]
+    #
+    # Q contains only this step's new suffix tokens: lengths [3, 2].
+    # cu_seqlens_q = [0, 3, 5]
+    #
+    # K contains the full visible history after appending each suffix:
+    # lengths [5, 6], so cu_seqlens_k = [0, 5, 11].
+    #
+    # For A's logical position 2:
+    #   logical_page = 2 // page_size = 2 // 4 = 0
+    #   offset_in_page = 2 % page_size = 2 % 4 = 2
+    #   physical_page = page_table[logical_page] = page_table[0] = 1
+    #   physical_slot = physical_page * page_size + offset_in_page
+    #                 = 1 * 4 + 2 = 6
+    # Therefore, A's logical positions 3 and 4 map to slots 7 and 16.
+    #
+    # Physical slot = physical_page * page_size + offset_in_page.
+    # slot_mapping = [6, 7, 16, 12, 13]
+    #   A positions [2, 3, 4] -> page 1 offsets [2, 3], page 4 offset [0]
+    #   B positions [4, 5]    -> page 3 offsets [0, 1]
+    #
+    # block_table = [
+    #     [1, 4],
+    #     [2, 3],
+    # ]
+    #
+    # A reaches the end of its prompt, but B still has tokens [26, 27] left.
+    # sample_indices = [2] selects A's final new-token hidden state (token 14).
+    # B is not sampled.
+    # max_seqlen_q = 3
+    # max_seqlen_k = 6
+
+    input_ids: torch.Tensor
+    position_ids: torch.Tensor
+    cu_seqlens_q: torch.Tensor
+    cu_seqlens_k: torch.Tensor
+    slot_mapping: torch.Tensor
+    block_table: torch.Tensor
+    sample_indices: torch.Tensor
+    #used by fa to select appropriate CUDA kernel,tile size, and shared memory allocation etc
+    max_seqlen_q: int
+    max_seqlen_k: int
+
 
 def allocate_prefill_pages(requests: "Sequence[Request]", pool: KVMemoryPool) -> None:
     """Assign prompt-sized pages atomically, or leave every request unchanged."""
