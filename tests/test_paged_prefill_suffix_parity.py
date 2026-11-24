@@ -1,4 +1,4 @@
-"""CUDA parity test between M2 full prefill and M3 chunked prefill."""
+"""CUDA parity test between M2 full prefill and M3 prefix-continuation prefill."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from miniengine.core import Request
 from miniengine.kv_memory_pool import KVMemoryPool
 from miniengine.model import CausalLM, ModelConfig, PagedAttentionOps
 from miniengine.paged_attention import (
-    PrefillChunk,
-    allocate_prefill_chunk_pages,
+    PrefillSuffix,
+    allocate_prefill_suffix_pages,
     allocate_prefill_pages,
-    build_packed_chunked_prefill,
+    build_packed_prefill_suffix,
     build_packed_prefill,
-    commit_prefill_chunks,
+    commit_prefill_suffixes,
     require_flash_attention,
 )
 
@@ -32,10 +32,10 @@ def _flash_attention_available() -> bool:
 
 @unittest.skipUnless(
     _flash_attention_available(),
-    "chunked-prefill parity requires CUDA and FlashAttention",
+    "prefix-continuation prefill parity requires CUDA and FlashAttention",
 )
-class ChunkedPrefillParityTests(unittest.TestCase):
-    def test_chunked_logits_match_single_shot_packed_prefill(self) -> None:
+class PrefillSuffixParityTests(unittest.TestCase):
+    def test_suffix_logits_match_single_shot_packed_prefill(self) -> None:
         torch.manual_seed(7)
         config = ModelConfig(
             vocab_size=64,
@@ -84,18 +84,18 @@ class ChunkedPrefillParityTests(unittest.TestCase):
                 full.max_seqlen,
             )
 
-        chunk_pool = make_pool()
+        suffix_pool = make_pool()
         a = Request(request_id="a", input_ids=a_ids)
         b = Request(request_id="b", input_ids=b_ids)
 
-        def run_chunks(chunks: list[PrefillChunk]) -> torch.Tensor:
-            allocate_prefill_chunk_pages(chunks, chunk_pool)
-            packed = build_packed_chunked_prefill(chunks, chunk_pool)
+        def run_suffixes(suffixes: list[PrefillSuffix]) -> torch.Tensor:
+            allocate_prefill_suffix_pages(suffixes, suffix_pool)
+            packed = build_packed_prefill_suffix(suffixes, suffix_pool)
             with torch.inference_mode():
-                logits = model.forward_paged_chunked_prefill(
+                logits = model.forward_paged_prefill_suffix(
                     packed.input_ids,
                     packed.position_ids,
-                    chunk_pool.kv_caches,
+                    suffix_pool.kv_caches,
                     packed.slot_mapping,
                     packed.cu_seqlens_q,
                     packed.cu_seqlens_k,
@@ -104,20 +104,20 @@ class ChunkedPrefillParityTests(unittest.TestCase):
                     packed.max_seqlen_q,
                     packed.max_seqlen_k,
                 )
-            commit_prefill_chunks(chunks)
+            commit_prefill_suffixes(suffixes)
             return logits
 
-        first_logits = run_chunks([PrefillChunk(a, 0, 8)])
+        first_logits = run_suffixes([PrefillSuffix(a, 0, 8)])
         self.assertEqual(tuple(first_logits.shape), (0, config.vocab_size))
 
-        a_logits = run_chunks(
-            [PrefillChunk(a, 8, 17), PrefillChunk(b, 0, 7)]
+        a_logits = run_suffixes(
+            [PrefillSuffix(a, 8, 17), PrefillSuffix(b, 0, 7)]
         )
-        b_logits = run_chunks([PrefillChunk(b, 7, 23)])
-        chunked_logits = torch.cat([a_logits, b_logits], dim=0)
+        b_logits = run_suffixes([PrefillSuffix(b, 7, 23)])
+        suffix_logits = torch.cat([a_logits, b_logits], dim=0)
 
         torch.testing.assert_close(
-            chunked_logits,
+            suffix_logits,
             full_logits,
             rtol=2e-2,
             atol=2e-2,
@@ -127,3 +127,4 @@ class ChunkedPrefillParityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

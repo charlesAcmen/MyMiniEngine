@@ -1,4 +1,4 @@
-"""Transaction tests for publishing incremental chunked-prefill KV state."""
+"""Transaction tests for publishing incremental prefix-continuation prefill KV state."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ from miniengine.config import SamplingConfig
 from miniengine.core import Request
 from miniengine.engine import Engine
 from miniengine.kv_memory_pool import KVMemoryPool
-from miniengine.paged_attention import PrefillChunk
+from miniengine.paged_attention import PrefillSuffix
 
 
-class _FakeChunkedModel:
+class _FakePrefixContinuationModel:
     fail_forward = False
 
     @classmethod
-    def forward_paged_chunked_prefill(
+    def forward_paged_prefill_suffix(
         cls,
         _input_ids,
         _position_ids,
@@ -36,7 +36,7 @@ class _FakeChunkedModel:
         return torch.zeros((sample_indices.numel(), 8))
 
 
-class ChunkedPrefillTransactionTests(unittest.TestCase):
+class PrefillSuffixTransactionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.pool = KVMemoryPool(
             num_pages=5,
@@ -50,37 +50,37 @@ class ChunkedPrefillTransactionTests(unittest.TestCase):
         self.engine = Engine.__new__(Engine)
         self.engine.kv_pool = self.pool
         self.engine.paged_attention_ops = object()
-        self.engine.model = _FakeChunkedModel()
+        self.engine.model = _FakePrefixContinuationModel()
         self.engine.sampling_config = SamplingConfig(temperature=0)
-        _FakeChunkedModel.fail_forward = False
+        _FakePrefixContinuationModel.fail_forward = False
 
     @staticmethod
     def _request() -> Request:
         return Request(request_id="request", input_ids=[1, 2, 3])
 
-    def test_partial_chunk_commits_without_sampling_then_final_chunk_samples(self) -> None:
+    def test_prefix_then_final_suffix_samples_only_at_prompt_end(self) -> None:
         request = self._request()
 
         with patch("miniengine.engine.sample_batch", return_value=[7]) as sample:
-            partial_result = self.engine.paged_prefill_chunks(
-                [PrefillChunk(request, 0, 2)]
+            prefix_result = self.engine.paged_prefill_suffixes(
+                [PrefillSuffix(request, 0, 2)]
             )
-            self.assertEqual(partial_result, [None])
+            self.assertEqual(prefix_result, [None])
             self.assertEqual(request.kv_seq_len, 2)
             self.assertEqual(request.page_table, [1])
             sample.assert_not_called()
 
-            final_result = self.engine.paged_prefill_chunks(
-                [PrefillChunk(request, 2, 3)]
+            final_result = self.engine.paged_prefill_suffixes(
+                [PrefillSuffix(request, 2, 3)]
             )
 
         self.assertEqual(final_result, [7])
         self.assertEqual(request.kv_seq_len, 3)
         self.assertEqual(request.page_table, [1, 2])
 
-    def test_sampling_failure_keeps_prior_chunk_and_returns_new_page(self) -> None:
+    def test_sampling_failure_keeps_prior_prefix_and_returns_new_page(self) -> None:
         request = self._request()
-        self.engine.paged_prefill_chunks([PrefillChunk(request, 0, 2)])
+        self.engine.paged_prefill_suffixes([PrefillSuffix(request, 0, 2)])
         original_table = request.page_table.copy()
         original_free = self.pool.num_free
 
@@ -91,21 +91,21 @@ class ChunkedPrefillTransactionTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(RuntimeError, "sampling failed"),
         ):
-            self.engine.paged_prefill_chunks([PrefillChunk(request, 2, 3)])
+            self.engine.paged_prefill_suffixes([PrefillSuffix(request, 2, 3)])
 
         self.assertEqual(request.kv_seq_len, 2)
         self.assertEqual(request.page_table, original_table)
         self.assertEqual(self.pool.num_free, original_free)
 
-    def test_forward_failure_keeps_prior_chunk_and_returns_new_page(self) -> None:
+    def test_forward_failure_keeps_prior_prefix_and_returns_new_page(self) -> None:
         request = self._request()
-        self.engine.paged_prefill_chunks([PrefillChunk(request, 0, 2)])
+        self.engine.paged_prefill_suffixes([PrefillSuffix(request, 0, 2)])
         original_table = request.page_table.copy()
         original_free = self.pool.num_free
-        _FakeChunkedModel.fail_forward = True
+        _FakePrefixContinuationModel.fail_forward = True
 
         with self.assertRaisesRegex(RuntimeError, "forward failed"):
-            self.engine.paged_prefill_chunks([PrefillChunk(request, 2, 3)])
+            self.engine.paged_prefill_suffixes([PrefillSuffix(request, 2, 3)])
 
         self.assertEqual(request.kv_seq_len, 2)
         self.assertEqual(request.page_table, original_table)
@@ -114,3 +114,4 @@ class ChunkedPrefillTransactionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

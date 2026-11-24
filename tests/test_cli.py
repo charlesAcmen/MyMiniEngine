@@ -26,7 +26,6 @@ class ServerCliTests(unittest.TestCase):
         self.assertEqual(args.page_size, 256)
         self.assertEqual(args.mode, "batched")
         self.assertEqual(args.sampling_config, SamplingConfig())
-        self.assertEqual(args.prefill_chunk_size, 0)
         self.assertEqual(args.scheduler_config, SchedulerConfig())
         self.assertFalse(args.engine_config.compile.enabled)
         self.assertFalse(args.engine_config.cuda_graph.enabled)
@@ -34,31 +33,6 @@ class ServerCliTests(unittest.TestCase):
     def test_paged_mode_is_selectable(self) -> None:
         args = parse_args(["--model", "local-model", "--mode", "paged"])
         self.assertEqual(args.mode, "paged")
-
-    def test_chunked_prefill_is_explicit_and_paged_only(self) -> None:
-        args = parse_args(
-            [
-                "--model",
-                "local-model",
-                "--mode",
-                "paged",
-                "--prefill-chunk-size",
-                "512",
-            ]
-        )
-        self.assertEqual(args.prefill_chunk_size, 512)
-        self.assertEqual(args.scheduler_config.prefill_chunk_size, 512)
-
-        for flags in (
-            ["--prefill-chunk-size", "-1"],
-            ["--prefill-chunk-size", "1"],
-        ):
-            with (
-                self.subTest(flags=flags),
-                contextlib.redirect_stderr(io.StringIO()),
-                self.assertRaises(SystemExit),
-            ):
-                parse_args(["--model", "local-model", *flags])
 
     def test_access_log_flag_is_not_exposed(self) -> None:
         with (
