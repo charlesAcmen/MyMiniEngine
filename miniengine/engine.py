@@ -36,13 +36,18 @@ from miniengine.model import (
     require_local_model_dir,
 )
 from miniengine.paged_attention import (
+    PrefillSuffix,
+    allocate_prefill_suffix_pages,
     allocate_prefill_pages,
+    build_packed_prefill_suffix,
     build_packed_prefill,
     build_paged_decode,
     commit_decode_batch,
     commit_prefill,
+    commit_prefill_suffixes,
     release_request_pages,
     require_flash_attention,
+    rollback_prefill_suffix_pages,
 )
 from miniengine.sampler import sample_batch, sample_token
 
@@ -351,6 +356,67 @@ class Engine:
         except Exception:
             for request in requests:
                 release_request_pages(request, pool)
+            raise
+
+    @torch.inference_mode()
+    def paged_prefill_suffixes(
+        self, suffixes: list[PrefillSuffix]
+    ) -> list[int | None]:
+        """Advance packed prompt suffixes and sample only completed prompts.
+
+        Request-visible KV lengths are committed only after every model layer
+        and every required sample succeeds. A failed batch keeps its prior
+        committed prefixes and returns only pages allocated by this call.
+        """
+        if not suffixes:
+            return []
+        if self.paged_attention_ops is None or self.kv_pool is None:
+            raise RuntimeError(
+                "paged_prefill_suffixes requires Engine(mode='paged')"
+            )
+        pool = self.kv_pool
+        original_page_counts: list[int] | None = None
+
+        try:
+            original_page_counts = allocate_prefill_suffix_pages(suffixes, pool)
+            packed = build_packed_prefill_suffix(suffixes, pool)
+            logits = self.model.forward_paged_prefill_suffix(
+                packed.input_ids,
+                packed.position_ids,
+                pool.kv_caches,
+                packed.slot_mapping,
+                packed.cu_seqlens_q,
+                packed.cu_seqlens_k,
+                packed.block_table,
+                packed.sample_indices,
+                packed.max_seqlen_q,
+                packed.max_seqlen_k,
+            )
+
+            completed_suffixes = [
+                suffix for suffix in suffixes if suffix.completes_prompt
+            ]
+            sampled_tokens = (
+                sample_batch(
+                    logits,
+                    self.sampling_config,
+                    [suffix.request.output_ids for suffix in completed_suffixes],
+                )
+                if completed_suffixes
+                else []
+            )
+            commit_prefill_suffixes(suffixes)
+
+            sampled_iter = iter(sampled_tokens)
+            return [
+                next(sampled_iter) if suffix.completes_prompt else None
+                for suffix in suffixes
+            ]
+        except Exception:
+            if original_page_counts is not None:
+                rollback_prefill_suffix_pages(
+                    suffixes, original_page_counts, pool
+                )
             raise
 
     @torch.inference_mode()
