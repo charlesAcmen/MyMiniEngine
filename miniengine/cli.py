@@ -115,6 +115,11 @@ def build_server_parser() -> argparse.ArgumentParser:
         help="Fraction of GPU memory reserved for model weights plus the fixed KV pool",
     )
     parser.add_argument(
+        "--disable-radix-cache",
+        action="store_true",
+        help="Disable the M3 token-prefix KV cache (paged mode only)",
+    )
+    parser.add_argument(
         "--sampling-config",
         type=SamplingConfig.from_json,
         default=SamplingConfig(),
@@ -152,6 +157,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             device=args.device,
             page_size=args.page_size,
             mem_fraction_static=args.mem_fraction_static,
+            radix_cache_enabled=not args.disable_radix_cache,
             compile=CompileConfig(enabled=args.torch_compile),
             cuda_graph=CudaGraphConfig(
                 enabled=args.cuda_graph,

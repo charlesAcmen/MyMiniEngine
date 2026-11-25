@@ -124,6 +124,7 @@ class EngineConfig:
     device: str = "cuda"
     page_size: int = 256
     mem_fraction_static: float = 0.80
+    radix_cache_enabled: bool = True
     compile: CompileConfig = field(default_factory=CompileConfig)
     cuda_graph: CudaGraphConfig = field(default_factory=CudaGraphConfig)
 
