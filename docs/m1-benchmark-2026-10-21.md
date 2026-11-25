@@ -2,8 +2,8 @@
 
 ## Scope and environment
 
-This record covers the local M1 implementation only. It is not an 8B, L4, or
-A6000 performance claim.
+This record covers the local M1 implementation with Qwen3-0.6B on an RTX 3060
+only. Future RTX 4060 measurements must be reported separately.
 
 - GPU: NVIDIA GeForce RTX 3060 12GB
 - Model: repository-local `models/Qwen3-0.6B`

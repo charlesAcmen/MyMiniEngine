@@ -3,8 +3,8 @@
 ## Evidence boundary
 
 This is a local checkpoint for the paged-KV and packed-prefill implementation,
-using Qwen3-0.6B on an RTX 3060 12GB. It is not an L4/Qwen3-8B, Part C, or
-final course-performance claim. Historical M1 one-shot numbers are not reused:
+using Qwen3-0.6B on an RTX 3060 12GB. It is not a Part C or final
+cross-GPU performance claim. Historical M1 one-shot numbers are not reused:
 all speedups below pair the current `batched` and `paged` paths on the same
 request set and configuration.
 
@@ -39,7 +39,6 @@ process group. Fatal failures are excluded from numeric aggregates.
 |---|---|
 | Unit tests | 36/36 passed |
 | Python compilation and `git diff --check` | Passed |
-| `scripts/check_part_b.sh` | Passed before collection |
 | Formal trials | 21 attempted; 16 successful; 5 safety-limit failures |
 | CUDA OOM / pool exhaustion / timeout | 0 / 0 / 0 |
 | MMLU-50 batched | 18/50 = 36% |

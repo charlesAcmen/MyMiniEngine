@@ -4,8 +4,8 @@
 
 This report validates the Part C paged-decode implementation locally with
 Qwen3-0.6B on an RTX 3060 12GB. It compares the current eager, TorchInductor,
-and manual CUDA Graph paths. It is not an L4/Qwen3-8B course-performance
-claim, and it does not attribute the results to FlashAttention itself: all
+and manual CUDA Graph paths. It is a local RTX 3060 result and must not be
+merged with future RTX 4060 measurements. It does not attribute the results to FlashAttention itself: all
 three paths preserve the same native FlashAttention KV-cache call.
 
 The final collection uses `mem_fraction_static=0.60`. Earlier 0.67 runs are
@@ -42,8 +42,6 @@ successful requests: three eager, three compiled, and three CUDA Graph runs.
 | Dynamo recompile-limit failure | 0 |
 | Server-log error scan | Clean |
 | `git -c core.whitespace=cr-at-eol diff --check` | Passed; respects the existing CRLF `model.py` baseline |
-| `scripts/check_part_c.sh` | Passed on the final working tree |
-| Part B regression gate | Unit, paged serving, and accuracy smoke passed |
 | Part C smoke | Compile, CUDA Graph, and shrinking batch passed |
 
 The CUDA Graph smoke uses buckets 1/2/4 and a client concurrency of three, so
@@ -147,9 +145,7 @@ fixed at `609da85` with tracked-diff hash
 | CUDA Graph | 72/200 = 36.0% | 15/100 = 15.0% | 300/300 |
 
 All 900 requests completed. The server logs contain no traceback, exception,
-request failure, or CUDA OOM. `scripts/check_part_b.sh` also passed on the
-working tree before the formal collection, covering unit tests, Python
-compilation, paged serving smoke, and the MMLU accuracy smoke.
+request failure, or CUDA OOM.
 
 The result supports the intended accuracy-preservation claim: neither compiled
 execution nor CUDA Graph replay caused a systematic accuracy regression.
