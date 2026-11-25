@@ -127,6 +127,11 @@ def build_server_parser() -> argparse.ArgumentParser:
         help="JSON file containing the server-wide token sampling policy",
     )
     parser.add_argument(
+        "--disable-retraction",
+        action="store_true",
+        help="Disable decode-time KV recompute retraction (paged mode only)",
+    )
+    parser.add_argument(
         "--torch-compile",
         action="store_true",
         help="Compile stable paged-decode tensor regions with TorchInductor",
@@ -164,7 +169,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 batch_sizes=args.cuda_graph_batch_sizes,
             ),
         )
-        args.scheduler_config = SchedulerConfig(max_running=args.max_running)
+        args.scheduler_config = SchedulerConfig(
+            max_running=args.max_running,
+            retraction_enabled=(
+                args.mode == "paged" and not args.disable_retraction
+            ),
+        )
         validate_runtime_configs(args.engine_config, args.scheduler_config)
     except ValueError as exc:
         parser.error(str(exc))

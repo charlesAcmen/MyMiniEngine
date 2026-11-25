@@ -109,6 +109,7 @@ class SchedulerConfig:
     """Immutable admission and iteration-level scheduling policy."""
 
     max_running: int = 16
+    retraction_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.max_running < 1:

@@ -85,6 +85,14 @@ means restarting that server with the desired flag.  `--mem-fraction-static`
 (default: `0.80`) bounds model weights plus the fixed pre-allocated KV pool as
 a fraction of total GPU memory.
 
+The installed FlashAttention paged-KV kernels require `--page-size` to be
+divisible by 256. Radix prefix caching is enabled by default in paged mode;
+use `--disable-radix-cache` for the preserved M2 comparison path. Runtime
+ownership and hit counters are exposed at `GET /cache_stats`. Decode-time KV
+retraction is also enabled by default in paged mode. It recomputes a selected
+active request after pool exhaustion; use `--disable-retraction` to reproduce
+the fail-stop baseline.
+
 ### Serving Benchmark (`bench_serving.py`)
 
 Measures throughput and latency under varying concurrency. Prompts are read
