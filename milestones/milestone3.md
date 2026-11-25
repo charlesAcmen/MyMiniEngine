@@ -75,10 +75,10 @@ Include screenshots of both the failing baseline and the successful retraction r
 
 ```bash
 # Milestone-2 baseline (for comparison)
-python -m miniengine --model Qwen/Qwen3-8B --mode paged --mem-fraction-static 0.85 --page-size 32
+python -m miniengine --model models/Qwen3-0.6B --mode paged --mem-fraction-static 0.75 --page-size 256
 
 # Milestone-3 (Part A + Part B; Part B is on by default)
-python -m miniengine --model Qwen/Qwen3-8B --mode paged --mem-fraction-static 0.85 --page-size 32 --prefill-chunk-size 512
+python -m miniengine --model models/Qwen3-0.6B --mode paged --mem-fraction-static 0.75 --page-size 256 --prefill-chunk-size 512
 ```
 
 ## Deliverables
@@ -92,7 +92,7 @@ python -m miniengine --model Qwen/Qwen3-8B --mode paged --mem-fraction-static 0.
 
 ### Report
 
-Submit a **PDF report to Gradescope**. Run all benchmarks on an **L4 GPU** with **`Qwen/Qwen3-8B`** so results are comparable across submissions. Include terminal screenshots for the items below and tabulate the numbers.
+Submit a **PDF report to Gradescope**. Run all benchmarks with **`models/Qwen3-0.6B`** on the locally available **RTX 3060 or RTX 4060**. Keep results from the two GPU models separate. Include terminal screenshots for the items below and tabulate the numbers.
 
 **Part A — Chunked Prefill**
 1. A `bench_serving` invocation that OOMs at `--prefill-chunk-size 0` and succeeds with a chunked setting. Show both server-side errors and client outcome.

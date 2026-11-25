@@ -140,17 +140,17 @@ and the tradeoffs you encountered.
 
 ```bash
 # Milestone 1 baseline (for comparison)
-python -m miniengine --model Qwen/Qwen3-8B --mode batched
+python -m miniengine --model models/Qwen3-0.6B --mode batched
 
 # Milestone 2: paged + torch.compile
-python -m miniengine --model Qwen/Qwen3-8B \
-    --mode paged --mem-fraction-static 0.85 \
-    --page-size 32 --torch-compile
+python -m miniengine --model models/Qwen3-0.6B \
+    --mode paged --mem-fraction-static 0.75 \
+    --page-size 256 --torch-compile
 
 # Plus extra-credit CUDA graphs
-python -m miniengine --model Qwen/Qwen3-8B \
-    --mode paged --mem-fraction-static 0.85 \
-    --page-size 32 --torch-compile \
+python -m miniengine --model models/Qwen3-0.6B \
+    --mode paged --mem-fraction-static 0.75 \
+    --page-size 256 --torch-compile \
     --cuda-graph --cuda-graph-batch-sizes 1,2,4,8,16,32
 ```
 
@@ -176,10 +176,11 @@ Optional (extra credit):
 
 ### Report
 
-Submit a **PDF report to Gradescope**. Run all benchmarks on an
-**L4 GPU** with **`Qwen/Qwen3-8B`** so results are comparable across
-submissions. The report must include screenshots of the terminal
-output for:
+Submit a **PDF report to Gradescope**. Run all benchmarks with
+**`models/Qwen3-0.6B`** on the locally available **RTX 3060 or RTX 4060**.
+Keep results from the two GPU models in separate tables rather than comparing
+them as if they were the same machine. The report must include screenshots of
+the terminal output for:
 
 1. **Accuracy.** `bench_accuracy` on MMLU and/or GSM8K showing your
    paged engine (with and without `--torch-compile`) matches the

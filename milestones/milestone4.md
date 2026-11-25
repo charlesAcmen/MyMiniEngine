@@ -51,7 +51,7 @@ You will use `bench_cache.py --workload multiturn` as the harness — it's the w
 2. **Restore the hit rate with HiCache.** Re-run the same workload with HiCache enabled and a CPU pool sized at ≥10× the GPU pool. The per-turn hit rate must **stay high across all turns** (no collapse). Report the new per-turn table side by side with (1).
 3. **End-to-end completion.** The workload must still finish correctly (token-level sanity, no hangs, no OOM in either tier).
 
-Full credit requires (1)+(2)+(3) on `Qwen/Qwen3-8B`/L4. End-to-end throughput and TTFT numbers should be reported but are **not** required to improve over the GPU-only baseline — async H2D and CPU PCIe bandwidth bound how much wall-time the rehydration saves.
+Full credit requires (1)+(2)+(3) with `models/Qwen3-0.6B` on an RTX 3060 or RTX 4060. End-to-end throughput and TTFT numbers should be reported but are **not** required to improve over the GPU-only baseline — async H2D and CPU PCIe bandwidth bound how much wall-time the rehydration saves.
 
 ### Bonus points
 
@@ -70,7 +70,7 @@ When accept length > 1, you spend fewer target-model forwards per generated toke
 
 Wire a draft model into the decode loop:
 
-1. **Load both models.** Target = `Qwen/Qwen3-8B` (the milestone model). Draft = [`Qwen/Qwen3-0.6B`](https://huggingface.co/Qwen/Qwen3-0.6B) — same tokenizer / vocab as the target.
+1. **Load both models.** Target = `models/Qwen3-0.6B`. The draft must be a smaller compatible model with the same tokenizer and vocabulary; if no such local model is available, document this track as not runnable on the current setup rather than substituting a larger target.
 2. **Draft K tokens.** From the current state of an active request, run the draft model autoregressively for `K` steps to produce a candidate continuation. Keep the draft's own KV cache so successive draft phases are cheap.
 3. **Verify in one target forward.** Feed the `K` candidate tokens (plus the last accepted token) to the target model in a single forward pass; for each position compare against the target's sampled / argmax token. Accept the longest matching prefix, replace the first mismatch with the target's token, and discard the rest. **Roll back** the draft's KV to match.
 4. **Stay correct.** With greedy sampling, the output stream must be **token-identical** to the non-speculative path on the same prompts. (With temperature > 0, use the standard rejection-sampling formulation — accept rate is the guarantee, not bitwise identity.)
@@ -87,7 +87,7 @@ Wire a draft model into the decode loop:
 
 Use `bench_serving` (default WildChat-style workload) and `bench_accuracy` on MMLU. For full credit:
 
-1. **Functional pipeline.** Speculative decoding produces correct outputs — MMLU accuracy on `Qwen/Qwen3-8B` matches the non-speculative baseline within noise (±1 pp).
+1. **Functional pipeline.** Speculative decoding produces correct outputs — MMLU accuracy on `models/Qwen3-0.6B` matches the non-speculative baseline within noise (±1 pp).
 2. **Accept length > 2.** Report the **mean accept length** across a `bench_serving` run at conc 1. ≥ 2.0 is the bar. Show how accept length varies with `K`.
 3. **Fewer target forwards.** Instrument and report the number of target-model forward passes per generated token. With non-speculative decoding this is 1.0; with speculation it should be `1 / mean_accept_length` (well below 1.0).
 
@@ -119,15 +119,15 @@ Required CLI for Track 3 is whatever your design needs — pick flag names consi
 
 ```bash
 # Track 1 — HiCache (multiturn cliff demo)
-python -m miniengine --model Qwen/Qwen3-8B --mode paged \
-    --mem-fraction-static 0.85 --page-size 32 \
+python -m miniengine --model models/Qwen3-0.6B --mode paged \
+    --mem-fraction-static 0.75 --page-size 256 \
     --prefill-chunk-size 512 --cpu-cache-size-gb 32
 
 # Track 2 — Speculative decoding
-python -m miniengine --model Qwen/Qwen3-8B --mode paged \
-    --mem-fraction-static 0.85 --page-size 32 \
+python -m miniengine --model models/Qwen3-0.6B --mode paged \
+    --mem-fraction-static 0.75 --page-size 256 \
     --prefill-chunk-size 512 \
-    --speculative-draft-model Qwen/Qwen3-0.6B \
+    --speculative-draft-model models/Qwen3-0.6B \
     --speculative-num-draft-tokens 5
 ```
 
@@ -135,7 +135,7 @@ python -m miniengine --model Qwen/Qwen3-8B --mode paged \
 
 ### Report
 
-Submit a **PDF report to Gradescope**. Run all benchmarks on an **L4 GPU** with **`Qwen/Qwen3-8B`** as the target/serving model so results are comparable across submissions. Use `Qwen/Qwen3-0.6B` for the Track 2 draft. Include terminal screenshots and tabulate the numbers.
+Submit a **PDF report to Gradescope**. Run all benchmarks with **`models/Qwen3-0.6B`** as the target/serving model on the locally available **RTX 3060 or RTX 4060**. Keep results from the two GPU models separate. For Track 2, use only a smaller tokenizer-compatible draft model. Include terminal screenshots and tabulate the numbers.
 
 The report should cover, regardless of track:
 
