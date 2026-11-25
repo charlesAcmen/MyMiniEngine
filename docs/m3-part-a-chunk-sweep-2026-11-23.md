@@ -87,6 +87,6 @@ tok/s at 16384, while smaller chunks provide a tighter activation bound.
    requests into the same prefill budget so prompts finish closer together.
 4. Define a total iteration token budget where decode-ready rows consume one
    token each and remaining budget is assigned to prefill.
-5. Re-select the chunk size on L4/Qwen3-8B. The 0.6B/3060 optimum is not
-   transferable because launch overhead and activation headroom scale
-   differently.
+5. Re-select the chunk size independently on the RTX 4060. The RTX 3060
+   optimum is not automatically transferable because launch overhead and
+   activation headroom differ between GPUs.

@@ -95,4 +95,4 @@ prefill, recovers 4.2% throughput over completion-first, and removes most of
 the TPOT and tail-latency distortion. It is much closer to the milestone's
 no-regression target, but the remaining 6-8.5% gaps are still measurable and
 must be reported rather than labeled noise. The final policy and chunk size
-must be re-selected on the required L4/Qwen3-8B environment.
+must be re-selected independently on each local GPU configuration.

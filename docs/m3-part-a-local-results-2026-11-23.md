@@ -4,9 +4,9 @@ Date: 2026-11-23
 
 ## Scope and environment
 
-This is local development evidence, not the final course submission evidence.
-Milestone 3 requires the final report to use Qwen3-8B on an L4; this run uses
-the locally available Qwen3-0.6B on an RTX 3060.
+This is local development evidence using Qwen3-0.6B on an RTX 3060. Future
+RTX 4060 results must be reported separately because they come from a different
+GPU configuration.
 
 - GPU: NVIDIA GeForce RTX 3060, 12,288 MiB, driver 616.92
 - PyTorch: 2.15.0+cu132; CUDA runtime reported by PyTorch: 13.2
@@ -59,7 +59,8 @@ The local limit is constrained by the approximately 90K-token KV capacity and
 Qwen3's 40,960-token per-request context limit. With the small 0.6B model and
 FlashAttention, the tested activation path remained executable until client
 timeouts became the practical limit. The required baseline-OOM/chunk-success
-pair must be rerun with Qwen3-8B on the course L4.
+pair should be probed again on the RTX 4060 to determine whether its different
+memory limit exposes the intended failure/success boundary.
 
 ## P2: repeated serving comparison
 
@@ -120,11 +121,11 @@ and preserves aggregate MMLU accuracy within noise. They do not yet satisfy all
 Milestone 3 Part A targets:
 
 1. No qualifying local CUDA activation OOM was found, so the required
-   unchunked-OOM/chunked-success evidence remains open for L4/Qwen3-8B.
+   unchunked-OOM/chunked-success evidence remains open for the local GPUs.
 2. The current completion-first FCFS chunk scheduler has a clear high-
    concurrency performance regression, especially TTFT p99, TPOT, and
    throughput at concurrency 16. This should be treated as an implementation
    result to optimize, not reported as "within noise."
 3. Accuracy is acceptable at the aggregate level, but the result format should
    retain a stable sample identifier or full prompt hash for exact per-question
-   parity analysis in the final L4 experiment.
+   parity analysis in the final local-GPU experiment.
