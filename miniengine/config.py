@@ -136,6 +136,10 @@ class EngineConfig:
             raise ValueError(f"unsupported dtype: {self.dtype}")
         if self.page_size < 1:
             raise ValueError("page_size must be positive")
+        if self.mode == "paged" and self.page_size % 256 != 0:
+            raise ValueError(
+                "FlashAttention paged KV requires page_size divisible by 256"
+            )
         if not 0 < self.mem_fraction_static < 1:
             raise ValueError("mem_fraction_static must be in (0, 1)")
         if self.compile.enabled and self.mode != "paged":
