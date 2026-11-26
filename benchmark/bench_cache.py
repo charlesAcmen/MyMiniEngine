@@ -52,6 +52,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import aiohttp
 
+from benchmark.diagnostic_samples import (
+    DiagnosticSample,
+    evenly_spaced_indices,
+    print_diagnostic_samples,
+)
 from miniengine.cli import non_negative_int, positive_int
 
 
@@ -372,6 +377,7 @@ def report(
     workload: str,
     wall_time: float,
     group_labels: dict[int, str] | None = None,
+    show_samples: int = 3,
 ) -> None:
     if not samples:
         print("No samples!")
@@ -440,6 +446,69 @@ def report(
                     f"{mid_ttft*1000:>7.0f} ms"
                 )
 
+    selected: list[Sample] = []
+    if show_samples > 0 and workload == "multiturn":
+        #session with smallest id
+        session_id = min(sample.session_id for sample in samples)
+        conversation = sorted(
+            (sample for sample in samples if sample.session_id == session_id),
+            key=lambda sample: sample.turn,
+        )
+        selected = [
+            #select evenly in conversation turns
+            conversation[index]
+            for index in evenly_spaced_indices(len(conversation), show_samples)
+        ]
+    elif show_samples > 0:
+        #sample.turn is group id for shared workload; pick the first group and show its samples
+        first_group = min(sample.turn for sample in samples)
+        group = sorted(
+            (sample for sample in samples if sample.turn == first_group),
+            #sort by cache hit tokens first, then session id to break ties
+            # A → (500, 3)
+            # B → (0,   2)
+            # C → (500, 1)
+            # B: hit=0,   session=2
+            # C: hit=500, session=1
+            # A: hit=500, session=3
+            key=lambda sample: (sample.cache_hit_tokens, sample.session_id),
+        )
+        selected = [
+            group[index]
+            for index in evenly_spaced_indices(len(group), show_samples)
+        ]
+
+    # Example terminal output (shared uses "group=0 request=0" as the label):
+    #   Cache diagnostic samples (3):
+    #
+    #   [1] session=0 turn=0
+    #       hit=0/128 completion_tokens=16
+    #       finish_reason='stop'
+    #       Prompt: The first user message ...
+    #       Output: The model response ...
+    #
+    # Later samples show other turns or requests selected from the same session/group.
+    print_diagnostic_samples(
+        [
+            DiagnosticSample(
+                label=(
+                    f"session={sample.session_id} turn={sample.turn}"
+                    if workload == "multiturn"
+                    else f"group={sample.turn} request={sample.session_id}"
+                ),
+                prompt=sample.prompt_preview,
+                output=sample.output_text,
+                details=(
+                    f"hit={sample.cache_hit_tokens}/{sample.prompt_tokens} "
+                    f"completion_tokens={sample.completion_tokens}",
+                    f"finish_reason={sample.finish_reason!r}",
+                ),
+            )
+            for sample in selected
+        ],
+        title="Cache diagnostic samples",
+    )
+
 
 # ── Main ───────────────────────────────────────────────────────────────
 
@@ -496,6 +565,12 @@ def main() -> None:
     )
     # multiturn-specific
     p.add_argument("--num-sessions", type=positive_int, default=16)
+    p.add_argument(
+        "--show-samples",
+        type=non_negative_int,
+        default=3,
+        help="Print up to N bounded conversation previews after timing (0 disables)",
+    )
     p.add_argument("--turns-per-session", type=positive_int, default=5)
     args = p.parse_args()
 

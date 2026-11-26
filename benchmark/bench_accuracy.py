@@ -35,8 +35,12 @@ from benchmark.result_artifacts import (
     validate_result_filename,
     write_benchmark_result,
 )
+from benchmark.diagnostic_samples import (
+    DiagnosticSample,
+    print_diagnostic_samples,
+)
 from benchmark.server_metadata import fetch_server_model_metadata
-from miniengine.cli import positive_int
+from miniengine.cli import non_negative_int, positive_int
 
 
 # Accuracy datasets are project-owned inputs, just like the local WildChat
@@ -235,11 +239,11 @@ async def run_eval(
                 correct = pred is not None and pred == sample["gold"]
 
             results.append(EvalResult(
-                prompt=sample["prompt"][:80],
+                prompt=sample["prompt"][:240],
                 gold=sample["gold"],
                 predicted=pred,
                 correct=correct,
-                model_output=text[:200],
+                model_output=text[:800],
                 latency=latency,
             ))
 
@@ -265,7 +269,7 @@ async def run_eval(
 # ── Reporting ───────────────────────────────────────────────────────────
 
 
-def print_report(results: list[EvalResult], dataset: str):
+def print_report(results: list[EvalResult], dataset: str, show_samples: int):
     total = len(results)
     correct = sum(r.correct for r in results)
     accuracy = correct / total if total > 0 else 0
@@ -285,12 +289,46 @@ def print_report(results: list[EvalResult], dataset: str):
         # Not available from results directly, just show overall
         pass
 
-    # Show some wrong examples
-    wrong = [r for r in results if not r.correct]
-    if wrong:
-        print(f"\n  Sample incorrect predictions ({min(5, len(wrong))} of {len(wrong)}):")
-        for r in wrong[:5]:
-            print(f"    Gold={r.gold}  Pred={r.predicted}  Output: {r.model_output[:80]}...")
+    # Parser failures are more diagnostic than ordinary wrong answers. Add a
+    # correct example when space remains so plausible output is visible too.
+    ordered = (
+        #answers that could not be parsed
+        [result for result in results if result.predicted is None]
+        + [
+            result for result in results
+            #parsed answers that were wrong
+            if result.predicted is not None and not result.correct
+        ]
+        #plausible answers
+        + [result for result in results if result.correct]
+    )
+    selected: list[EvalResult] = []
+    for result in ordered[:show_samples]:
+        if result not in selected:
+            selected.append(result)
+    # Example terminal output:
+    #   Accuracy diagnostic samples (3):
+    #
+    #   [1] accuracy=incorrect
+    #       gold='A' parsed=None
+    #       latency=0.523s
+    #       Prompt: What is ...
+    #       Output: The answer is ...
+    print_diagnostic_samples(
+        [
+            DiagnosticSample(
+                label=f"accuracy={'correct' if result.correct else 'incorrect'}",
+                prompt=result.prompt,
+                output=result.model_output,
+                details=(
+                    f"gold={result.gold!r} parsed={result.predicted!r}",
+                    f"latency={result.latency:.3f}s",
+                ),
+            )
+            for result in selected
+        ],
+        title="Accuracy diagnostic samples",
+    )
 
 
 def build_json_report(args, results: list[EvalResult]) -> dict:
@@ -345,6 +383,12 @@ def main():
                    help="Max output tokens (default: 32 for MMLU, 512 for GSM8K)")
     p.add_argument("--concurrency", type=positive_int, default=8)
     p.add_argument("--base-url", type=str, default="http://localhost:8000")
+    p.add_argument(
+        "--show-samples",
+        type=non_negative_int,
+        default=3,
+        help="Print up to N bounded answer previews after scoring (0 disables)",
+    )
     p.add_argument(
         "--subjects", type=str, default=None,
         help="Comma-separated MMLU subjects to filter (e.g. 'abstract_algebra,anatomy')",
@@ -423,7 +467,7 @@ def main():
         )
     )
 
-    print_report(results, args.dataset)
+    print_report(results, args.dataset, args.show_samples)
     result_path = write_benchmark_result(build_json_report(args, results))
     announce_result(result_path)
 

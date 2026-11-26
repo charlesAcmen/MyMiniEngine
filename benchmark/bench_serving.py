@@ -43,8 +43,19 @@ from benchmark.result_artifacts import (
     validate_result_filename,
     write_benchmark_result,
 )
+from benchmark.diagnostic_samples import (
+    DiagnosticSample,
+    clip_text,
+    evenly_spaced_indices,
+    print_diagnostic_samples,
+)
 from benchmark.server_metadata import fetch_server_model_metadata
-from miniengine.cli import positive_int, positive_int_csv, unit_interval
+from miniengine.cli import (
+    non_negative_int,
+    positive_int,
+    positive_int_csv,
+    unit_interval,
+)
 
 
 # ── Per-request metrics ────────────────────────────────────────────────
@@ -555,6 +566,50 @@ async def async_main(args, requests_pool, concurrencies):
         print_single_result(conc, len(ok), total_time, ttfts, completions, tpots, total_out)
 
     print_summary_table(all_results)
+    stressed_results = sorted(
+        #max concurrency has a better chance of produducing outputs like:
+        #empty responses
+        #chunked responses
+        #server error
+        #unknown finish reason
+        all_results[max(concurrencies)], key=lambda result: result.request_index
+        #sort by req index:req finish seq might shuffle
+    )
+    captured = [
+        result for result in stressed_results
+        if result.request_index in set(
+            evenly_spaced_indices(len(stressed_results), args.show_samples)
+        )
+    ]
+    # Example terminal output:
+    #   Diagnostic output samples (3):
+    #
+    #   [1] request=0 concurrency=32
+    #       completion_tokens=256 finish_reason='length'
+    #       error=None
+    #       Prompt: The user prompt ...
+    #       Output: The model response ...
+        # [2] request=50 concurrency=32
+        # completion_tokens=0 finish_reason=None
+        # error='HTTP 500: Internal Server Error'
+        # Prompt: ...
+        # Output: <empty>
+    # Samples come from evenly spaced requests at the highest tested concurrency.
+    print_diagnostic_samples(
+        [
+            DiagnosticSample(
+                label=f"request={result.request_index} concurrency={max(concurrencies)}",
+                prompt=result.prompt_preview,
+                output=result.output_preview,
+                details=(
+                    f"completion_tokens={result.num_output_tokens} "
+                    f"finish_reason={result.finish_reason!r}",
+                    f"error={result.error!r}",
+                ),
+            )
+            for result in captured[: args.show_samples]
+        ]
+    )
     return all_results
 
 
@@ -592,6 +647,12 @@ def main():
         help="Directory containing local WildChat Parquet files",
     )
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--show-samples",
+        type=non_negative_int,
+        default=3,
+        help="Print up to N bounded response previews after timing (0 disables)",
+    )
     args = p.parse_args()
     concurrencies = args.concurrencies
     random.seed(args.seed)
