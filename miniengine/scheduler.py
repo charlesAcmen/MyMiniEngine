@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
+from typing import Generic, Protocol, TypeVar
 
 from miniengine.config import SchedulerConfig
 from miniengine.core import (
@@ -34,8 +35,43 @@ from miniengine.core import (
 
 logger = logging.getLogger(__name__)
 
+#Protocol in Python
+#type checker
+#duck typing
+AdmissionT = TypeVar("AdmissionT")
 
-class Scheduler:
+
+class SchedulerEngine(Protocol[AdmissionT]):
+    """The orchestration capabilities Scheduler requires from an engine."""
+
+    mode: str
+
+    def validate_request_capacity(self, request: Request) -> None: ...
+    def prefill(self, request: Request) -> int: ...
+    def validate_decode_admission(self, request: Request) -> None: ...
+    def decode_step(self, request: Request) -> int: ...
+    def batched_decode(self, requests: list[Request]) -> list[int]: ...
+    def prefill_batch(self, requests: list[Request]) -> list[int]: ...
+    def decode_batch(self, requests: list[Request]) -> list[int]: ...
+
+    def try_prepare_paged_prefill(
+        self,
+        request: Request,
+        prepared: list[AdmissionT],
+    ) -> AdmissionT | None: ...
+
+    def execute_paged_prefill(
+        self,
+        admissions: list[AdmissionT],
+    ) -> list[int]: ...
+
+    def prepare_retracted_request(self, request: Request) -> None: ...
+    def release_request(self, request: Request) -> None: ...
+    def finish_request(self, request: Request) -> None: ...
+    def is_stop_token(self, token_id: int) -> bool: ...
+
+#accepts AdmissionT as a type parameter
+class Scheduler(Generic[AdmissionT]):
     """
     FCFS scheduler with naive and static-batch implementations.
 
@@ -51,7 +87,7 @@ class Scheduler:
     """
 
     def __init__(
-        self, engine: Engine, config: SchedulerConfig = SchedulerConfig()
+        self, engine: SchedulerEngine, config: SchedulerConfig = SchedulerConfig()
     ) -> None:
         self.engine = engine
         self.config = config
@@ -486,6 +522,9 @@ class Scheduler:
         with self._lock:
             self.waiting.appendleft(victim)
         self.total_retracted += 1
+        # Example message body:
+        # Retracted request req-b after KV pool exhausted: requested 1, have 0
+        # free pages (remaining_tokens=80, replay_tokens=769, active_survivors=1)
         logger.warning(
             "Retracted request %s after %s (remaining_tokens=%d, "
             "replay_tokens=%d, active_survivors=%d)",
@@ -558,7 +597,7 @@ class Scheduler:
     def _finish_request(self, req: Request, finished_list: list[Request]) -> None:
         """Mark a request as finished and free its resources."""
         req.status = RequestStatus.FINISHED
-        self.engine.release_request(req)
+        self.engine.finish_request(req)
         req.token_queue.put(TokenOutput(token_id=-1, finished=True))
         finished_list.append(req)
 
