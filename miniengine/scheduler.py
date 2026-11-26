@@ -85,6 +85,8 @@ class Scheduler:
         self.total_finished: int = 0
         self.total_failed: int = 0
         self.total_generated_tokens: int = 0
+        self.total_retracted: int = 0
+        self.total_cancelled: int = 0
 
     # ── Public API (thread-safe) ────────────────────────────────────────
 
@@ -154,6 +156,7 @@ class Scheduler:
 
         Returns list of requests that finished in this step.
         """
+        self._drain_cancelled_requests()
         finished: list[Request] = []
 
         # ── Pick one request ────────────────────────────────────────────
@@ -188,6 +191,7 @@ class Scheduler:
 
         Returns list of requests that finished in this step.
         """
+        self._drain_cancelled_requests()
         finished: list[Request] = []
 
         if not self.decode_ready:
@@ -252,6 +256,7 @@ class Scheduler:
         Its slot can consequently be admitted on the next scheduler iteration,
         without waiting for unrelated requests in the batch to finish.
         """
+        self._drain_cancelled_requests()
         finished: list[Request] = []
 
         # A slot is free whenever no decode-ready request owns its KV cache.
@@ -315,9 +320,10 @@ class Scheduler:
 
         Admission is FCFS and capacity-aware. Newly admitted prompts are
         flattened into one packed prefill batch, then all surviving requests
-        participate in one paged decode call. Only this scheduler thread owns
-        pool allocation and release, so allocator metadata needs no lock.
+        participate in one paged decode call. Engine owns capacity,
+        allocation, cache borrowing, and transactional resource rollback.
         """
+        self._drain_cancelled_requests()
         # M2 baseline: the original single-shot packed-prefill path.
         finished: list[Request] = []
         prefill_batch: list[Request] = []
@@ -398,6 +404,140 @@ class Scheduler:
         return finished
 
     # ── Helpers ─────────────────────────────────────────────────────────
+
+    def _drain_cancelled_requests(self) -> None:
+        """Release cancelled requests on the scheduler's owning thread."""
+        #HTTP thread might have called cancel_request() to enqueue a cancellation
+        #new req might be added to waiting
+        #scheduler itself might change registry and queue
+        with self._lock:
+        #goal:remove cancelled requests from registry and queues, then release their resources off-thread
+            #cancel_request() put id in _pending_cancellations
+            request_ids = self._pending_cancellations
+            #set helps to remove duplicates
+            self._pending_cancellations = set()
+            requests = [
+                request
+                for request_id in request_ids
+                if (request := self._requests.pop(request_id, None)) is not None
+            ]
+            #all cancelled requests are finished
+            if not requests:
+                return
+            cancelled_ids = {request.request_id for request in requests}
+            #remove those requests to be cancelled from waiting and decode_ready
+            self.waiting = deque(
+                request
+                for request in self.waiting
+                if request.request_id not in cancelled_ids
+            )
+            self.decode_ready = [
+                request
+                for request in self.decode_ready
+                if request.request_id not in cancelled_ids
+            ]
+        #exit the lock(resource release may be slow)
+        for request in requests:
+            #return private kv pages,do not free prefix-cache pages directly
+            #cancel cache_node pin,clear up page_table and kv_seq_len
+            self.engine.release_request(request)
+            #WAITING/RUNNING → CANCELLED
+            request.status = RequestStatus.CANCELLED
+            request.token_queue.put(TokenOutput(token_id=-1, finished=True))
+        #exclude finished reqs
+        self.total_cancelled += len(requests)
+        logger.info("Cancelled %d disconnected request(s)", len(requests))
+
+    def _retract_decode_victim(
+        self,
+        active_requests: list[Request],
+        exc: KVPoolExhaustedError,
+    ) -> bool:
+        """Reclaim one active request and replay its emitted context later.
+
+        A single active request cannot benefit: releasing and immediately
+        rebuilding the same sequence cannot create capacity for its next page.
+        """
+        if not self.config.retraction_enabled or len(active_requests) <= 1:
+            #not enabled or single req retract wont work
+            return False
+
+        victim = max(
+            active_requests,
+            key=lambda request: (
+                #select req with most remaining tokens to generate first 
+                request.max_new_tokens - request.num_output_tokens,
+                #select latest arrived request to retract firsts to secure FCFS order
+                request.arrival_time,
+            ),
+        )
+        self.engine.prepare_retracted_request(victim)
+        #RUNNING -> WAITING
+        victim.status = RequestStatus.WAITING
+
+        #sync with queue statusd
+        self.decode_ready = [
+            request for request in self.decode_ready if request is not victim
+        ]
+        with self._lock:
+            self.waiting.appendleft(victim)
+        self.total_retracted += 1
+        logger.warning(
+            "Retracted request %s after %s (remaining_tokens=%d, "
+            "replay_tokens=%d, active_survivors=%d)",
+            victim.request_id,
+            exc,
+            victim.max_new_tokens - victim.num_output_tokens,
+            victim.num_input_tokens,
+            len(self.decode_ready),
+        )
+        return True
+
+    def _fail_decode_capacity_victim(
+        self,
+        active_requests: list[Request],
+        exc: KVPoolExhaustedError,
+    ) -> None:
+        """Fail one request when decode cannot reclaim enough KV capacity."""
+        if not active_requests:
+            raise RuntimeError("KV exhaustion reported without an active request")
+
+        victim = max(
+            active_requests,
+            key=lambda request: (
+                #same as _retract_decode_victim
+                request.max_new_tokens - request.num_output_tokens,
+                request.arrival_time,
+            ),
+        )
+        #finish_request() is used for successfully finished requests
+        self.engine.release_request(victim)
+        victim.status = RequestStatus.FAILED
+        self.decode_ready = [
+            request for request in self.decode_ready if request is not victim
+        ]
+        with self._lock:
+            #global registry
+            self._requests.pop(victim.request_id, None)
+
+        message = f"{type(exc).__name__}: {exc}"[:2000]
+        victim.token_queue.put(
+            TokenOutput(
+                token_id=-1,
+                finished=True,
+                error=message,
+                error_code=KV_CAPACITY_EXHAUSTED,
+            )
+        )
+        self.total_failed += 1
+        logger.error(
+            "Failed request %s with %s; scheduler continues with %d active and "
+            "%d waiting request(s)",
+            victim.request_id,
+            KV_CAPACITY_EXHAUSTED,
+            len(self.decode_ready),
+            len(self.waiting),
+        )
 
     def _check_finished(self, req: Request, token_id: int) -> bool:
         """Decide whether a request should stop generating."""
