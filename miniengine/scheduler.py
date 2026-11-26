@@ -24,8 +24,13 @@ import threading
 from collections import deque
 
 from miniengine.config import SchedulerConfig
-from miniengine.core import Request, RequestStatus, TokenOutput
-from miniengine.engine import Engine
+from miniengine.core import (
+    KV_CAPACITY_EXHAUSTED,
+    KVPoolExhaustedError,
+    Request,
+    RequestStatus,
+    TokenOutput,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -365,7 +370,16 @@ class Scheduler:
             return finished
 
         active_requests = self.decode_ready
-        token_ids = self.engine.decode_batch(active_requests)
+        try:
+            token_ids = self.engine.decode_batch(active_requests)
+        except KVPoolExhaustedError as exc:
+            if self._retract_decode_victim(active_requests, exc):
+                #RUNNING -> WAITING,Release KV cache, and requeue the victim for later replay.
+                return finished
+            #retraction is not helping
+            self._fail_decode_capacity_victim(active_requests, exc)
+            #RUNNING -> FAILED,fail one request and continue with the rest of the active set.
+            return finished
         if len(token_ids) != len(active_requests):
             raise RuntimeError(
                 "paged_decode must return one token for every decode-ready request"

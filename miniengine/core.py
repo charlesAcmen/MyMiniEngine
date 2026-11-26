@@ -16,6 +16,26 @@ from enum import Enum, auto
 from typing import Any
 
 
+KV_CAPACITY_EXHAUSTED = "KV_CAPACITY_EXHAUSTED"
+REQUEST_TOO_LARGE = "REQUEST_TOO_LARGE"
+
+
+class KVPoolExhaustedError(RuntimeError):
+    """Paged KV capacity cannot satisfy an otherwise valid allocation."""
+
+
+class RequestTooLargeError(ValueError):
+    """A prompt can never fit in one empty paged-KV pool."""
+
+    def __init__(self, required_pages: int, usable_pages: int) -> None:
+        self.required_pages = required_pages
+        self.usable_pages = usable_pages
+        super().__init__(
+            f"prompt requires {required_pages} KV pages, "
+            f"but this worker has {usable_pages} usable pages"
+        )
+
+
 class RequestStatus(Enum):
     """Lifecycle states for a generation request."""
 

@@ -27,7 +27,13 @@ from pydantic import BaseModel, Field
 from tokenizers.decoders import DecodeStream
 
 from miniengine.config import SamplingConfig, validate_runtime_configs
-from miniengine.core import Request, TokenOutput
+from miniengine.core import (
+    KV_CAPACITY_EXHAUSTED,
+    REQUEST_TOO_LARGE,
+    Request,
+    RequestTooLargeError,
+    TokenOutput,
+)
 from miniengine.engine import Engine
 from miniengine.scheduler import Scheduler
 
@@ -166,7 +172,20 @@ async def chat_completions(raw: ChatCompletionRequest):
         max_new_tokens=raw.max_tokens if raw.max_tokens is not None else 256,
         ignore_eos=raw.ignore_eos,
     )
-    runtime.scheduler.add_request(req)
+    try:
+        runtime.scheduler.add_request(req)
+    except RequestTooLargeError as exc:
+        raise HTTPException(
+            #422： Unprocessable Entity
+            status_code=422,
+            detail={
+                "code": REQUEST_TOO_LARGE,
+                "message": str(exc),
+                "required_pages": exc.required_pages,
+                "usable_pages": exc.usable_pages,
+                "request_id": req.request_id,
+            },
+        ) from exc
 
     if raw.stream:
         return StreamingResponse(

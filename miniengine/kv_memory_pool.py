@@ -33,6 +33,8 @@ import math
 
 import torch
 
+from miniengine.core import KVPoolExhaustedError
+
 logger = logging.getLogger(__name__)
 
 
@@ -113,7 +115,7 @@ class KVMemoryPool:
         if num_pages == 0:
             return []
         if len(self._free) < num_pages:
-            raise RuntimeError(
+            raise KVPoolExhaustedError(
                 f"KV pool exhausted: requested {num_pages}, "
                 f"have {len(self._free)} free pages"
             )

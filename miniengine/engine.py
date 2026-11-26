@@ -25,7 +25,7 @@ from transformers import AutoTokenizer
 
 from miniengine.compilation import build_paged_decode_ops
 from miniengine.config import EngineConfig, SamplingConfig
-from miniengine.core import Request
+from miniengine.core import Request, RequestTooLargeError
 from miniengine.cuda_graph import CudaGraphRunner
 from miniengine.kv_memory_pool import KVMemoryPool
 from miniengine.model import (
@@ -236,6 +236,16 @@ class Engine:
             text = self.tokenizer.apply_chat_template(messages, **kwargs)
         return self.tokenizer.encode(text, add_special_tokens=False)
 
+    def validate_request_capacity(self, request: Request) -> None:
+        """Reject a prompt that cannot fit even in an otherwise empty backend."""
+        if self.mode != "paged":
+            return
+        if self.kv_pool is None:
+            raise RuntimeError("paged engine requires an initialized KV pool")
+        required_pages = self.kv_pool.pages_needed(request.num_input_tokens)
+        if required_pages > self.kv_pool.num_usable:
+            raise RequestTooLargeError(required_pages, self.kv_pool.num_usable)
+    
     def decode_tokens(self, token_ids: list[int]) -> str:
         """Decode one complete generated sequence into user-visible text."""
         return self.tokenizer.decode(
