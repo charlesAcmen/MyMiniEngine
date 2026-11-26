@@ -141,6 +141,24 @@ class Scheduler(Generic[AdmissionT]):
                 len(self.waiting),
             )
             self._work_available.notify()
+    #HTTP thread send cancel request,rather clearup directly
+    def cancel_request(self, request_id: str) -> bool:
+        """Queue cancellation without releasing engine resources off-thread."""
+        #scheduler thread might step() remove _req, read _pending
+        with self._work_available:
+            if request_id not in self._requests:
+                return False
+            self._pending_cancellations.add(request_id)
+            # scheduler thread:
+            # self._work_available.wait_for(
+            #     lambda:
+            #         not self._running_flag
+            #         or bool(self.waiting)
+            #         or bool(self.decode_ready)
+            #         or bool(self._pending_cancellations)
+            # )
+            self._work_available.notify()
+            return True
 
     def start(self) -> None:
         """Start the scheduler loop in a background daemon thread."""
@@ -169,6 +187,7 @@ class Scheduler(Generic[AdmissionT]):
                     lambda: not self._running_flag
                     or bool(self.waiting)
                     or bool(self.decode_ready)
+                    or bool(self._pending_cancellations)
                 )
                 if not self._running_flag:
                     return
@@ -628,6 +647,7 @@ class Scheduler(Generic[AdmissionT]):
             self._requests.clear()
             self.waiting.clear()
             self.decode_ready = []
+            self._pending_cancellations.clear()
 
         for request in requests:
             try:
