@@ -74,6 +74,7 @@ class Scheduler:
         # Registry includes waiting, decode-ready, and requests held in local step
         # variables, so a step failure can terminate every waiter.
         self._requests: dict[str, Request] = {}
+        self._pending_cancellations: set[str] = set()
 
         # Thread control
         self._lock = threading.Lock()
@@ -419,6 +420,9 @@ class Scheduler:
             requests = [
                 request
                 for request_id in request_ids
+                #None:return default value if key not found,avoid KeyError
+                #this is quite important:req just finished and added to _pending queue
+                #should not be popped here,so None is required here
                 if (request := self._requests.pop(request_id, None)) is not None
             ]
             #all cancelled requests are finished
