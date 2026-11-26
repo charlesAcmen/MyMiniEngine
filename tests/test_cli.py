@@ -33,6 +33,32 @@ class ServerCliTests(unittest.TestCase):
     def test_paged_mode_is_selectable(self) -> None:
         args = parse_args(["--model", "local-model", "--mode", "paged"])
         self.assertEqual(args.mode, "paged")
+        self.assertTrue(args.engine_config.radix_cache_enabled)
+        self.assertTrue(args.scheduler_config.retraction_enabled)
+
+    def test_retraction_can_be_disabled(self) -> None:
+        args = parse_args(
+            [
+                "--model",
+                "local-model",
+                "--mode",
+                "paged",
+                "--disable-retraction",
+            ]
+        )
+        self.assertFalse(args.scheduler_config.retraction_enabled)
+
+    def test_radix_cache_can_be_disabled(self) -> None:
+        args = parse_args(
+            [
+                "--model",
+                "local-model",
+                "--mode",
+                "paged",
+                "--disable-radix-cache",
+            ]
+        )
+        self.assertFalse(args.engine_config.radix_cache_enabled)
 
     def test_access_log_flag_is_not_exposed(self) -> None:
         with (
@@ -61,6 +87,7 @@ class ServerCliTests(unittest.TestCase):
             ["--mem-fraction-static", "1.0"],
             ["--max-running", "0"],
             ["--port", "65536"],
+            ["--mode", "paged", "--page-size", "32"],
         ]
         for flags in invalid_flags:
             with (
